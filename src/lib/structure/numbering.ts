@@ -66,9 +66,9 @@ export function normalizeNumber(raw: string): ParsedNumber {
   let parent: string | undefined;
 
   // Check patterns
-  const mainMatch = normalized.match(/^(\d+)$/);
-  const partMatch = normalized.match(/^(\d+)\(?([a-z])\)?$/i);
-  const subPartMatch = normalized.match(/^(\d+)\(?([a-z])\)?\(?([ivx]+|[0-9]+)\)?$/i);
+  const mainMatch = normalized.match(/^([A-Z]?\d+)$/i);
+  const partMatch = normalized.match(/^([A-Z]?\d+)\(?([a-z])\)?$/i);
+  const subPartMatch = normalized.match(/^([A-Z]?\d+)\(?([a-z])\)?\(?([ivx]+|[0-9]+)\)?$/i);
   const letterOnly = normalized.match(/^\(([a-z])\)$/i);
   const romanOnly = normalized.match(/^\(([ivx]+)\)$/i) || normalized.match(/^[ivx]+$/i);
 
@@ -131,15 +131,18 @@ export function normalizeNumber(raw: string): ParsedNumber {
 }
 
 export function compareNormalized(a: string, b: string): number {
-  // sort by numeric base then letter then roman
-  // Simple: split numeric
   const parse = (s: string) => {
-    const m = s.match(/^(\d+)(?:\(([a-z])\))?(?:\(([ivx0-9]+)\))?/i);
-    if (!m) return { n: 9999, l: "", sub: "" };
-    return { n: parseInt(m[1] || "9999", 10), l: m[2] || "", sub: m[3] || "" };
+    const m = s.match(/^([A-Z]?\d+)(?:\(([a-z])\))?(?:\(([ivx0-9]+)\))?/i);
+    if (!m) return { prefix: "", n: 9999, l: "", sub: "" };
+    const full = m[1];
+    const prefixMatch = full.match(/^([A-Z]+)(\d+)$/i);
+    const prefix = prefixMatch ? prefixMatch[1].toUpperCase() : "";
+    const num = prefixMatch ? parseInt(prefixMatch[2], 10) : parseInt(full, 10);
+    return { prefix, n: num, l: m[2] || "", sub: m[3] || "" };
   };
   const pa = parse(a);
   const pb = parse(b);
+  if (pa.prefix !== pb.prefix) return pa.prefix.localeCompare(pb.prefix);
   if (pa.n !== pb.n) return pa.n - pb.n;
   if (pa.l !== pb.l) return pa.l.localeCompare(pb.l);
   return pa.sub.localeCompare(pb.sub);

@@ -102,34 +102,39 @@ export default function ResultsPage() {
     return () => clearInterval(interval);
   }, [result, params.jobId]);
 
-  // fetch pages for viewer (from documents)
+  // Real pages and PDF URL from job documents
   const [pages, setPages] = useState<any[]>([]);
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [pdfMime, setPdfMime] = useState<string | null>(null);
+
   useEffect(() => {
-    // try to get answer sheet pages via job fetch
     fetch(`/api/jobs/${params.jobId}`)
       .then((r) => r.json())
-      .then(async (data) => {
-        // we don't have pages in job directly; derive from result answer regions
-        // For viewer we will construct synthetic pages if needed
-        if (result) {
-          // collect pageIds from answerGroups
-          const pageMap = new Map<string, any>();
-          for (const ag of result.answers) {
-            for (const reg of ag.regions) {
-              if (!pageMap.has(reg.pageId)) pageMap.set(reg.pageId, { id: reg.pageId, pageNumber: pageMap.size + 1, width: 800, height: 1100, rotation: 0 });
-            }
-          }
-          if (pageMap.size === 0) {
-            // fallback: fetch via document inspection? Use dummy
-            setPages([{ id: "p1", pageNumber: 1, width: 800, height: 1100, rotation: 0 }]);
+      .then((data) => {
+        if (data.pages && data.pages.length > 0) {
+          // Filter to answer sheet pages
+          const answerDocIds = (data.documents || []).filter((d: any) => d.kind === "answerSheet").map((d: any) => d.id);
+          const answerPages = data.pages.filter((p: any) => answerDocIds.includes(p.documentId));
+          if (answerPages.length > 0) {
+            setPages(answerPages);
           } else {
-            setPages(Array.from(pageMap.values()));
+            setPages(data.pages);
           }
         }
-      });
-  }, [result]);
+        // Build PDF URL from answerSheetFileId
+        const job = data.job;
+        if (job?.answerSheetFileId) {
+          const doc = (data.documents || []).find((d: any) => d.kind === "answerSheet");
+          const mime = doc?.mime || "application/pdf";
+          setPdfMime(mime);
+          setPdfUrl(`/api/files/${params.jobId}/${job.answerSheetFileId}`);
+        }
+        if (data.job?.createdAt) setJobCreatedAt(data.job.createdAt);
+      })
+      .catch(() => {});
+  }, [params.jobId]);
 
-  // Simpler: if pages empty, derive from result
+  // Fallback: if pages still empty, derive from result
   useEffect(() => {
     if (result && pages.length === 0) {
       const pageMap = new Map<string, any>();
@@ -233,7 +238,7 @@ export default function ResultsPage() {
             <span className="text-sm font-medium">Answer Sheet</span>
             <span className="text-xs text-gray-500">{selected ? `Q ${selected.question.normalizedNumber} selected` : ""}</span>
           </div>
-          <ViewerShell pages={pages} highlights={highlights} activePageId={activePageId} selectedQuestionId={selectedId || undefined} />
+          <ViewerShell pages={pages} highlights={highlights} activePageId={activePageId} selectedQuestionId={selectedId || undefined} pdfUrl={pdfUrl || undefined} mime={pdfMime || undefined} />
         </div>
       </div>
     </div>

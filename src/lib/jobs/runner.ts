@@ -9,6 +9,25 @@ import { aggregateScore, buildEvidence } from "@/lib/evidence/aggregate";
 import { decideForQuestion } from "@/lib/decision";
 import { generateId } from "@/lib/storage";
 
+function resolvePageId(modelPageId: string | undefined, pages: any[]): string {
+  if (!modelPageId) return pages[0]?.id;
+  // If modelPageId is already a UUID (contains -), return as is if exists
+  if (modelPageId.includes("-") && pages.some(p=>p.id===modelPageId)) return modelPageId;
+  // Try to parse as page number (1-indexed) or index (0-indexed)
+  const num = parseInt(String(modelPageId).replace(/[^0-9]/g, ""), 10);
+  if (!isNaN(num)) {
+    // Try 1-indexed first
+    const byNumber = pages.find(p=>p.pageNumber===num);
+    if (byNumber) return byNumber.id;
+    // Try 0-indexed
+    if (pages[num]) return pages[num].id;
+    // Try num-1
+    if (pages[num-1]) return pages[num-1].id;
+  }
+  // Fallback to first page
+  return pages[0]?.id;
+}
+
 // Stage order
 const STAGE_ORDER: ProcessingStage[] = [
   "VALIDATING",
@@ -289,7 +308,8 @@ async function structuring(jobId: string, extraction: any) {
       parentId = parent?.id;
     }
 
-    const pageRefs = q.pageRefs && q.pageRefs.length > 0 ? q.pageRefs : [qpPages[0]?.id].filter(Boolean);
+    const rawPageRefs = q.pageRefs && q.pageRefs.length > 0 ? q.pageRefs : [qpPages[0]?.id].filter(Boolean);
+    const pageRefs = rawPageRefs.map((pr: string) => resolvePageId(pr, qpPages));
     const sourceRegions = (q.sourceRegions || []).map((r: any) => ({
       x: r.box[0],
       y: r.box[1],
@@ -339,10 +359,11 @@ async function structuring(jobId: string, extraction: any) {
       width: b[2],
       height: b[3],
     }));
+    const resolvedPageId = resolvePageId(r.pageId, asPages);
     const region: AnswerRegion = {
       id: generateId(),
       documentId: asDoc.id,
-      pageId: r.pageId || asPages[0]?.id,
+      pageId: resolvedPageId,
       regionType: r.visualConfidence && r.visualConfidence > 0.6 && !r.rawText ? "DIAGRAM" : "HANDWRITING",
       rawText: r.rawText || "",
       normalizedText: (r.rawText || "").trim(),
@@ -387,6 +408,14 @@ async function structuring(jobId: string, extraction: any) {
   return { questions, answerRegions, answerGroups: finalGroups, qpDoc, asDoc, qpPages, asPages };
 }
 
+function numericPart(s: string): string {
+  const m = s.match(/(\d+)/);
+  return m ? m[1] : s;
+}
+function stripPrefix(s: string): string {
+  return s.replace(/^[A-Z]+/, "");
+}
+
 async function matchingStage(jobId: string, structured: any) {
   const { questions, answerGroups } = structured as { questions: QuestionNode[]; answerGroups: AnswerGroup[] };
 
@@ -401,15 +430,28 @@ async function matchingStage(jobId: string, structured: any) {
       const reg = ag.regions[0];
       const evidence: Evidence[] = [];
 
-      // Explicit label evidence
+      // Explicit label evidence — handle prefix like Q1 vs 1 vs T5
       if (reg.questionLabel) {
         const parsedLabel = normalizeNumber(reg.questionLabel).normalized;
+        const labelNum = numericPart(parsedLabel);
+        const qNum = numericPart(q.normalizedNumber);
+        const labelPrefix = parsedLabel.replace(/[0-9].*/, "");
+        const qPrefix = q.normalizedNumber.replace(/[0-9].*/, "");
         if (parsedLabel === q.normalizedNumber) {
           evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.95, `Explicit label ${reg.questionLabel} matched ${q.normalizedNumber}`, 1.0));
+        } else if (labelNum === qNum && labelPrefix === qPrefix) {
+          // Same numeric and same prefix after normalization (e.g., T5 vs T5)
+          evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.92, `Label ${reg.questionLabel} matched ${q.normalizedNumber} (normalized)`, 0.95));
+        } else if (labelNum === qNum && (labelPrefix === "" || qPrefix === "")) {
+          // One has prefix stripped (e.g., Q1 vs 1) — consider strong match
+          evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.88, `Label ${reg.questionLabel} matched ${q.normalizedNumber} (prefix-insensitive)`, 0.9));
+        } else if (labelNum === qNum) {
+          // Same number but different prefix (e.g., 2 vs T5? No, 2 vs 5 is different number, so not here)
+          // For 2 vs T5, labelNum 2 vs qNum 5 -> not equal, so not here
+          evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.4, `Same number different prefix ${reg.questionLabel} vs ${q.normalizedNumber}`, 0.6));
         } else if (parsedLabel && q.normalizedNumber.includes(parsedLabel)) {
           evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.6, `Partial label ${reg.questionLabel} vs ${q.normalizedNumber}`, 0.7));
         } else {
-          // label mismatched => low score
           evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.1, `Label ${reg.questionLabel} does not match ${q.normalizedNumber}`, 0.9));
         }
       } else {
