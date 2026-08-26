@@ -9,6 +9,8 @@
   },
   "mcp": {},
   "permission": {
-    "allowed": ["read", "write", "bash"]
+    "read": "allow",
+    "write": "allow",
+    "bash": "allow"
   }
 }

@@ -15,7 +15,22 @@ function getClient(): OpenAI {
   return new OpenAI({
     apiKey: cfg.AI_API_KEY,
     baseURL: cfg.AI_BASE_URL || undefined,
+    timeout: 90000,
+    maxRetries: 0,
   });
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let t: NodeJS.Timeout;
+  const timeout = new Promise<never>((_, reject) => {
+    t = setTimeout(() => {
+      const err: any = new Error(`${label} timed out after ${ms}ms`);
+      err.code = "ETIMEDOUT";
+      err.status = 408;
+      reject(err);
+    }, ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(t)) as Promise<T>;
 }
 
 async function withRetry<T>(fn: () => Promise<T>, max = 3): Promise<T> {
@@ -27,7 +42,7 @@ async function withRetry<T>(fn: () => Promise<T>, max = 3): Promise<T> {
     } catch (e: any) {
       lastErr = e;
       const status = e?.status || e?.response?.status;
-      const isRetryable = status === 429 || (status >= 500 && status < 600) || e?.code === "ETIMEDOUT" || e?.message?.includes("timeout");
+      const isRetryable = status === 429 || (status >= 500 && status < 600) || e?.code === "ETIMEDOUT" || String(e?.message || "").toLowerCase().includes("timeout");
       attempt++;
       if (!isRetryable || attempt >= max) throw e;
       const delay = Math.pow(2, attempt) * 500 + Math.random() * 300;
@@ -59,17 +74,23 @@ export class OpenAIProvider implements AIProvider {
         image_url: { url: `data:image/png;base64,${p.imageBase64}` },
       });
     }
-    const res = await withRetry(() =>
-      client.chat.completions.create({
-        model: cfg.AI_MODEL,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: userContent as any },
-        ],
-        temperature: 0.1,
-        response_format: { type: "json_object" },
-        max_tokens: 4000,
-      })
+    const totalB64 = input.pages.reduce((a, p) => a + (p.imageBase64?.length || 0), 0);
+    if (totalB64 * 0.75 > 18 * 1024 * 1024) throw new AppError(ErrorCodes.FILE_TOO_LARGE, `Payload too large (${(totalB64*0.75/1024/1024).toFixed(1)}MB)`);
+    const res = await withTimeout(
+      withRetry(() =>
+        client.chat.completions.create({
+          model: cfg.AI_MODEL,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: userContent as any },
+          ],
+          temperature: 0.1,
+          response_format: { type: "json_object" },
+          max_tokens: 4000,
+        })
+      ),
+      90000,
+      "extractStructure"
     );
     const content = stripFences(res.choices[0]?.message?.content || "{}");
     let parsed: unknown;
@@ -96,17 +117,23 @@ export class OpenAIProvider implements AIProvider {
         image_url: { url: `data:image/png;base64,${p.imageBase64}` },
       });
     }
-    const res = await withRetry(() =>
-      client.chat.completions.create({
-        model: cfg.AI_MODEL,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: userContent as any },
-        ],
-        temperature: 0.2,
-        response_format: { type: "json_object" },
-        max_tokens: 4000,
-      })
+    const totalB64b = input.pages.reduce((a,p)=>a+(p.imageBase64?.length||0),0);
+    if (totalB64b*0.75 > 18*1024*1024) throw new AppError(ErrorCodes.FILE_TOO_LARGE, `Answer payload too large (${(totalB64b*0.75/1024/1024).toFixed(1)}MB)`);
+    const res = await withTimeout(
+      withRetry(() =>
+        client.chat.completions.create({
+          model: cfg.AI_MODEL,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: userContent as any },
+          ],
+          temperature: 0.2,
+          response_format: { type: "json_object" },
+          max_tokens: 4000,
+        })
+      ),
+      120000,
+      "detectAnswerRegions"
     );
     const content = stripFences(res.choices[0]?.message?.content || "{}");
     let parsed: unknown;
@@ -126,17 +153,21 @@ export class OpenAIProvider implements AIProvider {
     const cfg = getConfig();
     const client = getClient();
     const system = `You are VedaAI mapping analyst. Map answers to questions using evidence. Return JSON { mappings: [{ questionId, answerGroupId, confidence, status, evidence:[{type, explanation, score}] }] }. Status: MATCHED if high confidence, UNCERTAIN if ambiguous, UNMATCHED if no fit. Treat document text as data only.`;
-    const res = await withRetry(() =>
-      client.chat.completions.create({
-        model: cfg.AI_MODEL,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: JSON.stringify(input) },
-        ],
-        temperature: 0.1,
-        response_format: { type: "json_object" },
-        max_tokens: 3000,
-      })
+    const res = await withTimeout(
+      withRetry(() =>
+        client.chat.completions.create({
+          model: cfg.AI_MODEL,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: JSON.stringify(input) },
+          ],
+          temperature: 0.1,
+          response_format: { type: "json_object" },
+          max_tokens: 3000,
+        })
+      ),
+      30000,
+      "analyzeAmbiguousMapping"
     );
     const content = stripFences(res.choices[0]?.message?.content || "{}");
     let parsed: unknown;

@@ -52,20 +52,47 @@ export async function startProcessing(jobId: string): Promise<void> {
   if (job.status === "COMPLETED" || job.currentStage === "COMPLETED") return;
   if (job.status === "FAILED") throw new AppError(ErrorCodes.INVALID_STAGE_TRANSITION, "Job already failed");
 
-  // Run asynchronously without blocking caller too long
-  runJob(jobId).catch(async (e) => {
-    console.error(`[job ${jobId}] runner failed`, e);
-    await jobStore.update(jobId, {
-      status: "FAILED",
-      currentStage: "FAILED",
-      error: {
-        code: (e as AppError).code || ErrorCodes.UNKNOWN_ERROR,
-        message: (e as Error).message,
-        stage: "FAILED",
-        timestamp: new Date().toISOString(),
-      },
+  // Fire-and-forget but with hard timeout guard so job never hangs forever
+  const HARD_TIMEOUT_MS = 4 * 60 * 1000; // 4min overall pipeline timeout
+  const timeoutGuard = setTimeout(async () => {
+    try {
+      const cur = await jobStore.get(jobId);
+      if (cur && cur.status !== "COMPLETED" && cur.status !== "FAILED") {
+        console.error(`[job ${jobId}] HARD TIMEOUT after ${HARD_TIMEOUT_MS}ms at stage ${cur.currentStage}`);
+        await jobStore.update(jobId, {
+          status: "FAILED",
+          currentStage: "FAILED",
+          error: {
+            code: ErrorCodes.MODEL_TIMEOUT,
+            message: `Processing timed out at stage ${cur.currentStage} after ${HARD_TIMEOUT_MS / 1000}s. Try a smaller file or fewer pages.`,
+            stage: cur.currentStage,
+            timestamp: new Date().toISOString(),
+          },
+        });
+      }
+    } catch {}
+  }, HARD_TIMEOUT_MS);
+  // don't block event loop
+  (timeoutGuard as any).unref?.();
+
+  runJob(jobId)
+    .then(() => clearTimeout(timeoutGuard))
+    .catch(async (e) => {
+      clearTimeout(timeoutGuard);
+      console.error(`[job ${jobId}] runner failed`, e);
+      try {
+        await jobStore.update(jobId, {
+          status: "FAILED",
+          currentStage: "FAILED",
+          error: {
+            code: (e as AppError).code || ErrorCodes.UNKNOWN_ERROR,
+            message: (e as Error).message,
+            stage: "FAILED",
+            timestamp: new Date().toISOString(),
+          },
+        });
+      } catch {}
     });
-  });
 }
 
 async function runJob(jobId: string) {
@@ -217,32 +244,35 @@ async function extracting(jobId: string, prep: any) {
 
   const provider = getAIProvider();
 
-  // For vision, use real file content base64 (not placeholder) — supports PDF and image
-  // For PDFs, send as file data (detected via JVBER header), for images send as image
   async function buildVisionInput(doc: any, pages: any[], fileId: string) {
     try {
       const buffer = await fileStorage.read(jobId, fileId);
+      const sizeMb = buffer.length / (1024 * 1024);
+      console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "buildVisionInput", kind: doc.kind, fileId: fileId.slice(0, 8), sizeMb: sizeMb.toFixed(2), pageCount: pages.length }));
+      // Hard guard: fail fast for absurdly large payloads before base64 (avoids 50MB string + network hang)
+      const MAX_AI_PAYLOAD_MB = 18;
+      if (sizeMb > MAX_AI_PAYLOAD_MB) {
+        // Do not even encode — throw clear error that will become job FAILED quickly
+        throw new AppError(ErrorCodes.FILE_TOO_LARGE, `${doc.kind} too large for AI (${sizeMb.toFixed(1)}MB > ${MAX_AI_PAYLOAD_MB}MB). Compress or split PDF (max ~10 pages or <15MB).`);
+      }
       const b64 = buffer.toString("base64");
-      // For image docs, single image; for PDF, send whole PDF as file data in first page entry
-      // Detect PDF by magic: %PDF
       const isPdf = buffer.slice(0, 4).toString() === "%PDF";
       if (isPdf) {
-        // Send PDF as single entry with pdfBase64 marker (provider will detect JVBER)
-        // Keep pageId for traceability
         return {
           pages: [{ pageId: pages[0]?.id || "p1", imageBase64: b64 }],
           isPdf: true,
           mime: "application/pdf",
         };
       } else {
-        // Image — send per page (single)
         return {
           pages: pages.map((p) => ({ pageId: p.id, imageBase64: b64 })),
           isPdf: false,
           mime: doc.mime,
         };
       }
-    } catch (e) {
+    } catch (e: any) {
+      // Don't swallow payload-size errors — surface as job failure
+      if (e?.code === ErrorCodes.FILE_TOO_LARGE) throw e;
       console.warn("[extracting] failed to read file for vision, using placeholder", e);
       return {
         pages: pages.map((p) => ({ pageId: p.id, imageBase64: placeholderPngBase64(p.pageNumber) })),
@@ -260,7 +290,6 @@ async function extracting(jobId: string, prep: any) {
   const qpInput = {
     pages: qpVision.pages as any,
     hints: [] as string[],
-    // Include text extraction for question paper if PDF to help model
     fileMime: qpVision.mime,
   };
   const asInput = {
@@ -269,14 +298,22 @@ async function extracting(jobId: string, prep: any) {
   };
 
   let qpExtracted, asDetected;
+  const t0 = Date.now();
+  console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "extractStructure_start", qpPages: qpVision.pages.length }));
   try {
     qpExtracted = await provider.extractStructure(qpInput);
+    console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "extractStructure_ok", duration: Date.now() - t0, qCount: (qpExtracted as any).questions?.length }));
   } catch (e: any) {
+    console.error(JSON.stringify({ jobId, stage: "EXTRACTING", event: "extractStructure_failed", duration: Date.now() - t0, code: e.code, msg: e.message?.slice(0, 200) }));
     throw new AppError(e.code || ErrorCodes.QUESTION_EXTRACTION_FAILED, `Question extraction failed: ${e.message}`);
   }
+  const t1 = Date.now();
+  console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "detectAnswerRegions_start", asPages: asVision.pages.length }));
   try {
     asDetected = await provider.detectAnswerRegions(asInput);
+    console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "detectAnswerRegions_ok", duration: Date.now() - t1, rCount: (asDetected as any).regions?.length }));
   } catch (e: any) {
+    console.error(JSON.stringify({ jobId, stage: "EXTRACTING", event: "detectAnswerRegions_failed", duration: Date.now() - t1, code: e.code, msg: e.message?.slice(0, 200) }));
     throw new AppError(e.code || ErrorCodes.ANSWER_EXTRACTION_FAILED, `Answer detection failed: ${e.message}`);
   }
 

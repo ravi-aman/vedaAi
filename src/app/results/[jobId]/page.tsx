@@ -81,11 +81,16 @@ export default function ResultsPage() {
     })();
   }, [result, jobCreatedAt, showAuthGate, params.jobId]);
 
-  // Auto-claim when user signs in while viewing result
+  // Auto-claim when user signs in while viewing result — stop once claimed/authenticated
   useEffect(() => {
-    if (!result) return;
+    if (!result || showAuthGate === false) return;
     let cancelled = false;
+    let claimed = false;
     const interval = setInterval(async () => {
+      if (claimed || cancelled) {
+        clearInterval(interval);
+        return;
+      }
       try {
         const { createClient } = await import("@/lib/supabase/client");
         const supabase = createClient();
@@ -93,14 +98,19 @@ export default function ResultsPage() {
         if (data.user && !cancelled) {
           const res = await fetch(`/api/jobs/${params.jobId}/claim`, { method: "POST" });
           if (res.ok && !cancelled) {
+            claimed = true;
+            clearInterval(interval);
             setShowAuthGate(false);
             setAuthGateDismissed(false);
           }
         }
       } catch {}
     }, 3000);
-    return () => clearInterval(interval);
-  }, [result, params.jobId]);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [result, params.jobId, showAuthGate]);
 
   // Real pages and PDF URL from job documents
   const [pages, setPages] = useState<any[]>([]);

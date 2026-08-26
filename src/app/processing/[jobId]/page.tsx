@@ -20,29 +20,54 @@ export default function ProcessingPage() {
 
   useEffect(() => {
     let cancelled = false;
-    let interval: any;
+    let interval: ReturnType<typeof setInterval> | null = null;
+    let abort: AbortController | null = null;
+    let terminal = false;
     async function poll() {
+      if (terminal || cancelled) return;
+      // avoid overlapping requests
+      if (abort) return;
+      abort = new AbortController();
+      const timeout = setTimeout(() => abort!.abort(), 8000);
       try {
-        const res = await fetch(`/api/jobs/${params.jobId}`);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Failed to fetch");
-        if (!cancelled) {
-          setJob(data.job);
-          if (data.job.status === "COMPLETED") {
-            router.push(`/results/${params.jobId}`);
-          } else if (data.job.status === "FAILED") {
-            setError(data.job.error?.message || "Processing failed");
+        const res = await fetch(`/api/jobs/${params.jobId}`, { signal: abort.signal, cache: "no-store" });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          // 404 after restart = job lost (in-memory store); surface clearly and stop polling
+          if (res.status === 404) {
+            if (!cancelled) setError((data as any).error || "Job not found — server restarted and in-memory job was lost. Please re-upload.");
+            terminal = true;
+            if (interval) clearInterval(interval);
+            return;
           }
+          throw new Error((data as any).error || `Failed to fetch (${res.status})`);
+        }
+        if (cancelled) return;
+        setJob(data.job);
+        if (data.job.status === "COMPLETED") {
+          terminal = true;
+          if (interval) clearInterval(interval);
+          router.push(`/results/${params.jobId}`);
+        } else if (data.job.status === "FAILED") {
+          terminal = true;
+          if (interval) clearInterval(interval);
+          setError(data.job.error?.message || "Processing failed");
         }
       } catch (e: any) {
-        if (!cancelled) setError(e.message);
+        if (e.name === "AbortError") return;
+        if (!cancelled && !terminal) setError(e.message);
+      } finally {
+        clearTimeout(timeout);
+        abort = null;
       }
     }
     poll();
     interval = setInterval(poll, 1500);
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      terminal = true;
+      if (interval) clearInterval(interval);
+      try { abort?.abort(); } catch {}
     };
   }, [params.jobId, router]);
 

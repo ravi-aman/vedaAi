@@ -16,17 +16,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ job
   }
 
   try {
-    // set to VALIDATING first
     await jobStore.update(jobId, {
       status: "VALIDATING",
       currentStage: "VALIDATING",
       updatedAt: new Date().toISOString(),
+      progress: {
+        ...job.progress,
+        stageStates: { ...job.progress.stageStates, VALIDATING: "in_progress" as const },
+      },
     });
+    console.log(JSON.stringify({ jobId, stage: "START", event: "start_processing", ts: new Date().toISOString() }));
     await startProcessing(jobId);
     const updated = await jobStore.get(jobId);
     return NextResponse.json({ jobId, job: updated });
   } catch (e: any) {
-    console.error(e);
+    console.error(JSON.stringify({ jobId, stage: "START", error: e.message, code: e.code }));
     return NextResponse.json({ error: e.message, code: e.code || "UNKNOWN_ERROR" }, { status: 500 });
   }
 }
