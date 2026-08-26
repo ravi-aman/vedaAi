@@ -246,13 +246,14 @@ export class OpencodeZenProvider implements AIProvider {
       })),
     ];
 
+    const extractTimeout = getConfig().EXTRACT_TIMEOUT_MS;
     const raw = await withRetry(async () => {
       try {
-        return await callResponses(responsesInput, system, 90000);
+        return await callResponses(responsesInput, system, extractTimeout);
       } catch (e: any) {
         if (e.status === 404 || e.status === 400) {
           // Responses not supported, try chat
-          return await callChatFallback(system, chatFallbackContent, 90000);
+          return await callChatFallback(system, chatFallbackContent, extractTimeout);
         }
         throw e;
       }
@@ -310,11 +311,12 @@ export class OpencodeZenProvider implements AIProvider {
       })),
     ];
 
+    const detectTimeout = getConfig().DETECT_TIMEOUT_MS;
     const raw = await withRetry(async () => {
       try {
-        return await callResponses(responsesInput, system, 120000);
+        return await callResponses(responsesInput, system, detectTimeout);
       } catch (e: any) {
-        if (e.status === 404 || e.status === 400) return await callChatFallback(system, chatFallbackContent, 120000);
+        if (e.status === 404 || e.status === 400) return await callChatFallback(system, chatFallbackContent, detectTimeout);
         throw e;
       }
     });
@@ -345,13 +347,14 @@ export class OpencodeZenProvider implements AIProvider {
       },
     ];
 
+    const mappingTimeout = getConfig().MAPPING_TIMEOUT_MS;
     const raw = await withRetry(async () => {
       try {
-        return await callResponses(responsesInput, system, 30000);
+        return await callResponses(responsesInput, system, mappingTimeout);
       } catch (e: any) {
         if (e.status === 404 || e.status === 400) {
           // chat fallback
-          return await callChatFallback(system, [{ type: "text", text: userText }], 30000);
+          return await callChatFallback(system, [{ type: "text", text: userText }], mappingTimeout);
         }
         throw e;
       }

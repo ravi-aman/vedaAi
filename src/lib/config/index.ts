@@ -15,6 +15,21 @@ const envSchema = z.object({
   MAX_FILE_SIZE_MB: z.coerce.number().default(100),
   MAX_PAGES: z.coerce.number().default(50),
   MAX_CONCURRENT_AI: z.coerce.number().default(2),
+  // AI timeouts (ms) — fail fast instead of hanging
+  EXTRACT_TIMEOUT_MS: z.coerce.number().default(30000),
+  DETECT_TIMEOUT_MS: z.coerce.number().default(30000),
+  MAPPING_TIMEOUT_MS: z.coerce.number().default(30000),
+  // OCR — Google Cloud Vision DOCUMENT_TEXT_DETECTION (async PDF)
+  OCR_PROVIDER: z.enum(["google-vision", "mock"]).default("google-vision"),
+  GOOGLE_CLOUD_PROJECT_ID: z.string().optional(),
+  GOOGLE_CLOUD_STORAGE_BUCKET: z.string().optional(),
+  GOOGLE_CLOUD_OCR_INPUT_PREFIX: z.string().default("ocr-input"),
+  GOOGLE_CLOUD_OCR_OUTPUT_PREFIX: z.string().default("ocr-output"),
+  GOOGLE_CLOUD_KEY_JSON: z.string().optional(),
+  GOOGLE_APPLICATION_CREDENTIALS: z.string().optional(),
+  OCR_OPERATION_TIMEOUT_MS: z.coerce.number().default(300000),
+  OCR_POLL_INTERVAL_MS: z.coerce.number().default(5000),
+  OCR_MAX_RETRIES: z.coerce.number().default(3),
   // Supabase
   NEXT_PUBLIC_SUPABASE_URL: z.string().url().optional().or(z.literal("")),
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: z.string().optional(),
@@ -72,6 +87,22 @@ export function requireAiConfig(): AppConfig {
 export function isSupabaseConfigured(): boolean {
   const cfg = getConfig();
   return Boolean(cfg.NEXT_PUBLIC_SUPABASE_URL && cfg.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY);
+}
+
+export function isGoogleOcrConfigured(): boolean {
+  const cfg = getConfig() as any;
+  return Boolean(cfg.GOOGLE_CLOUD_PROJECT_ID && cfg.GOOGLE_CLOUD_STORAGE_BUCKET);
+}
+
+export function requireGoogleOcrConfig(): void {
+  const cfg = getConfig() as any;
+  if (cfg.OCR_PROVIDER === "mock") return;
+  const missing: string[] = [];
+  if (!cfg.GOOGLE_CLOUD_PROJECT_ID) missing.push("GOOGLE_CLOUD_PROJECT_ID");
+  if (!cfg.GOOGLE_CLOUD_STORAGE_BUCKET) missing.push("GOOGLE_CLOUD_STORAGE_BUCKET");
+  if (missing.length > 0) {
+    throw new Error(`OCR_CONFIGURATION_ERROR: Missing ${missing.join(", ")}. Set env or use OCR_PROVIDER=mock for tests.`);
+  }
 }
 
 export const mappingThresholds = {

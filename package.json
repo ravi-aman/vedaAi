@@ -16,6 +16,8 @@
     "evaluate": "tsx scripts/evaluate.ts"
   },
   "dependencies": {
+    "@google-cloud/storage": "^8.0.1",
+    "@google-cloud/vision": "^6.0.0",
     "@supabase/ssr": "^0.12.5",
     "@supabase/supabase-js": "^2.112.4",
     "file-type": "^22.0.2",

@@ -15,9 +15,8 @@ export const config = {
      * - _next/static (static files)
      * - _next/image (image optimization files)
      * - favicon.ico (favicon file)
-     * - api/jobs (polling) and api/files (pdf) — still need auth but we avoid extra supabase roundtrip latency by excluding? Keep api but exclude /messages and other 404 noise.
-     * We keep matcher narrow: exclude api polling from heavy auth? Actually auth is needed for those routes server-side anyway, so we let proxy run for api but with optimization in middleware.
+     * We keep matcher narrow. Previous exclusion for `messages` was hiding a 404 spam bug — removed. Any polling should go via /api/jobs only.
      */
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$|messages|.*\\.map$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$|.*\\.map$).*)",
   ],
 };

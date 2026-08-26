@@ -5,6 +5,10 @@ export type ProcessingStage =
   | "UPLOADED"
   | "VALIDATING"
   | "PREPROCESSING"
+  | "OCR_SUBMITTED"
+  | "OCR_PROCESSING"
+  | "OCR_COMPLETED"
+  | "OCR_FAILED"
   | "EXTRACTING"
   | "STRUCTURING"
   | "MATCHING"
@@ -193,6 +197,15 @@ export interface ProcessingJob {
   pipelineVersion: string;
   modelVersion?: string;
   promptVersion?: string;
+  // OCR metadata (Google Vision async)
+  ocrOperationId?: string;
+  ocrOutputUri?: string;
+  ocrInputUri?: string;
+  ocrAttempt?: number;
+  ocrStartedAt?: string;
+  ocrCompletedAt?: string;
+  ocrErrorCode?: string;
+  ocrPageCount?: number;
 }
 
 export interface QuestionResult {

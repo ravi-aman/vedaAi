@@ -5,6 +5,8 @@ import { useParams, useRouter } from "next/navigation";
 const STAGES: { key: string; label: string }[] = [
   { key: "VALIDATING", label: "Validating files" },
   { key: "PREPROCESSING", label: "Preparing documents" },
+  { key: "OCR_SUBMITTED", label: "OCR processing" },
+  { key: "OCR_PROCESSING", label: "Reading answer sheet" },
   { key: "EXTRACTING", label: "Extracting structure" },
   { key: "STRUCTURING", label: "Detecting answers" },
   { key: "MATCHING", label: "Mapping answers" },
