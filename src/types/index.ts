@@ -181,6 +181,10 @@ export interface ProcessingJob {
   answerSheetFileId?: string;
   questionPaperDocId?: string;
   answerSheetDocId?: string;
+  // SaaS ownership
+  guestSessionId?: string | null;
+  userId?: string | null;
+  claimedAt?: string | null;
   progress: {
     stageStates: Record<ProcessingStage, "pending" | "in_progress" | "completed" | "failed" | "skipped">;
     currentStageProgress?: number;

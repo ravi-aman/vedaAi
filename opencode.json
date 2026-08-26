@@ -2,9 +2,10 @@
   "$schema": "https://opencode.ai/config.json",
   "model": "muse-spark-1.2-contributor-free",
   "provider": {
-    "type": "openai-compatible",
-    "baseUrl": "${OPENCODE_API_BASE}",
-    "apiKey": "${OPENCODE_API_KEY}"
+    "openai": {
+      "baseURL": "https://opencode.ai/zen/v1",
+      "apiKey": "{env:OPENCODE_API_KEY}"
+    }
   },
   "mcp": {},
   "permission": {

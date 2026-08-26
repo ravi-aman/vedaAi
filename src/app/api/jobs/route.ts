@@ -3,18 +3,36 @@ import { jobStore } from "@/lib/storage";
 import { generateId } from "@/lib/storage";
 import { getConfig } from "@/lib/config";
 import type { ProcessingJob } from "@/types";
+import { getOrCreateGuestSession } from "@/lib/auth/guest";
+import { createClient } from "@/lib/supabase/server";
 
 export async function POST(req: NextRequest) {
   try {
     const cfg = getConfig();
     const id = generateId();
     const now = new Date().toISOString();
+    // guest session
+    let guestSessionId: string | null = null;
+    try {
+      guestSessionId = await getOrCreateGuestSession();
+    } catch {}
+    // try to get authenticated user if Supabase configured
+    let userId: string | null = null;
+    try {
+      if (cfg.NEXT_PUBLIC_SUPABASE_URL && cfg.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) {
+        const supabase = await createClient();
+        const { data } = await supabase.auth.getUser();
+        userId = data.user?.id || null;
+      }
+    } catch {}
     const job: ProcessingJob = {
       id,
       createdAt: now,
       updatedAt: now,
       status: "CREATED",
       currentStage: "CREATED",
+      guestSessionId,
+      userId,
       progress: {
         stageStates: {
           CREATED: "completed",
@@ -36,7 +54,7 @@ export async function POST(req: NextRequest) {
       modelVersion: cfg.AI_MODEL,
     };
     await jobStore.create(job);
-    console.log(JSON.stringify({ jobId: id, stage: "CREATED", status: "created", timestamp: now }));
+    console.log(JSON.stringify({ jobId: id, stage: "CREATED", guestSessionId: guestSessionId?.slice(0,8), userId: userId?.slice(0,8), timestamp: now }));
     return NextResponse.json({ jobId: id, job }, { status: 201 });
   } catch (e: any) {
     console.error(e);

@@ -1,0 +1,18 @@
+{
+  "questions": [
+    { "normalizedNumber": "1", "text": "What is photosynthesis? Explain the process.", "parent": null },
+    { "normalizedNumber": "2", "text": "Solve the equation x^2 -5x +6=0", "parent": null },
+    { "normalizedNumber": "2(a)", "text": "Find the roots", "parent": "2" },
+    { "normalizedNumber": "11(a)", "text": "Define depositories Act", "parent": "11" }
+  ],
+  "answers": [
+    { "pageId": "p1", "boxes": [[0.1,0.2,0.8,0.15]], "label": "1" },
+    { "pageId": "p1", "boxes": [[0.1,0.4,0.8,0.2]], "label": "2(a)" }
+  ],
+  "mappings": [
+    { "question": "1", "answerIndex": 0, "status": "MATCHED" },
+    { "question": "2(a)", "answerIndex": 1, "status": "MATCHED" },
+    { "question": "11(a)", "answerIndex": null, "status": "UNANSWERED" }
+  ],
+  "regions": []
+}

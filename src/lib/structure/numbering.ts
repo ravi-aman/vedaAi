@@ -96,7 +96,8 @@ export function normalizeNumber(raw: string): ParsedNumber {
     partType = "PART";
     parent = undefined;
   } else if (romanOnly) {
-    const r = romanOnly[1]?.toLowerCase ? romanOnly[1].toLowerCase() : normalized.toLowerCase();
+    const extracted = romanOnly[1] ?? normalized;
+    const r = extracted.toLowerCase();
     if (isRoman(r.replace(/[\(\)]/g, ""))) {
       normalized = `(${r.replace(/[\(\)]/g, "")})`;
       depth = 2;

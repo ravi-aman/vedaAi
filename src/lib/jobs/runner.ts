@@ -150,7 +150,10 @@ async function preprocess(jobId: string) {
 
   const docs = await documentStore.getByJob(jobId);
   for (const doc of docs) {
-    const buffer = await fileStorage.read(jobId, doc.id);
+    // file is stored under fileId (job.questionPaperFileId / answerSheetFileId), not doc.id
+    const fileId = doc.kind === "questionPaper" ? job.questionPaperFileId : doc.kind === "answerSheet" ? job.answerSheetFileId : doc.id;
+    if (!fileId) throw new AppError(ErrorCodes.STORAGE_ERROR, `No fileId for doc ${doc.id}`);
+    const buffer = await fileStorage.read(jobId, fileId);
     const isPdf = doc.mime === "application/pdf";
     const inspection = isPdf ? await inspectPdf(buffer) : await inspectImage(buffer);
     // update document pageCount if mismatch
