@@ -31,21 +31,30 @@ export function decideForQuestion(
   }
 
   // If margin small and both above review → UNCERTAIN
-  if (second && margin < 0.15 && second.score >= review) {
-    return {
-      status: "UNCERTAIN",
-      confidence: topScore,
-      evidence: [
-        ...top.evidence,
-        {
-          type: "SEMANTIC_SIMILARITY",
-          source: "decision",
-          score: margin,
-          explanation: `Top two candidates close (margin ${margin.toFixed(2)}), requires review`,
-          reliability: 0.8,
-        },
-      ],
-    };
+  // Threshold 0.08 is more decisive than 0.15 — requires stronger ambiguity to trigger review
+  // Also, if top has explicit label 0.95 and second does not, don't flag as uncertain even if margin small
+  const topHasExplicit = top.evidence.some((e) => e.type === "EXPLICIT_QUESTION_LABEL" && e.score >= 0.9);
+  const secondHasExplicit = second?.evidence.some((e) => e.type === "EXPLICIT_QUESTION_LABEL" && e.score >= 0.9);
+  if (second && margin < 0.08 && second.score >= review) {
+    // If top has explicit and second doesn't, it's not ambiguous
+    if (topHasExplicit && !secondHasExplicit) {
+      // proceed to MATCHED
+    } else {
+      return {
+        status: "UNCERTAIN",
+        confidence: topScore,
+        evidence: [
+          ...top.evidence,
+          {
+            type: "SEMANTIC_SIMILARITY",
+            source: "decision",
+            score: margin,
+            explanation: `Top two candidates close (margin ${margin.toFixed(2)}), requires review`,
+            reliability: 0.8,
+          },
+        ],
+      };
+    }
   }
 
   const status: DecisionStatus = topScore >= high ? "MATCHED" : "UNCERTAIN";
@@ -61,7 +70,7 @@ export function decideForAnswerGroup(
   const second = sorted[1];
   const margin = second ? top.score - second.score : 1;
   if (top.score < mappingThresholds.review) return { status: "UNMATCHED", confidence: top.score };
-  if (second && margin < 0.15 && second.score >= mappingThresholds.review) {
+  if (second && margin < 0.08 && second.score >= mappingThresholds.review) {
     return { status: "UNCERTAIN", confidence: top.score };
   }
   return { status: top.score >= mappingThresholds.high ? "MATCHED" : "UNCERTAIN", chosen: top, confidence: top.score };

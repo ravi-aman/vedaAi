@@ -12,7 +12,7 @@ const envSchema = z.object({
   // mapping thresholds single source
   MAPPING_HIGH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.75),
   MAPPING_REVIEW_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
-  MAX_FILE_SIZE_MB: z.coerce.number().default(25),
+  MAX_FILE_SIZE_MB: z.coerce.number().default(100),
   MAX_PAGES: z.coerce.number().default(50),
   MAX_CONCURRENT_AI: z.coerce.number().default(2),
   // Supabase

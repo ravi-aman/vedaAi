@@ -430,24 +430,34 @@ async function matchingStage(jobId: string, structured: any) {
       const reg = ag.regions[0];
       const evidence: Evidence[] = [];
 
-      // Explicit label evidence — handle prefix like Q1 vs 1 vs T5
+      // Explicit label evidence — handle prefix like Q1 vs 1 vs T5, and part like 2 vs 2(a)
       if (reg.questionLabel) {
         const parsedLabel = normalizeNumber(reg.questionLabel).normalized;
+        const labelStripped = parsedLabel.replace(/^[A-Z]+/, "");
+        const qStripped = q.normalizedNumber.replace(/^[A-Z]+/, "");
         const labelNum = numericPart(parsedLabel);
         const qNum = numericPart(q.normalizedNumber);
         const labelPrefix = parsedLabel.replace(/[0-9].*/, "");
         const qPrefix = q.normalizedNumber.replace(/[0-9].*/, "");
+        const isQPrefix = (p: string) => p === "" || p === "Q";
         if (parsedLabel === q.normalizedNumber) {
           evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.95, `Explicit label ${reg.questionLabel} matched ${q.normalizedNumber}`, 1.0));
-        } else if (labelNum === qNum && labelPrefix === qPrefix) {
-          // Same numeric and same prefix after normalization (e.g., T5 vs T5)
+        } else if (labelStripped === qStripped) {
+          // Full stripped match including part (e.g., 2(a) vs 2(a) after stripping Q) — strong
           evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.92, `Label ${reg.questionLabel} matched ${q.normalizedNumber} (normalized)`, 0.95));
-        } else if (labelNum === qNum && (labelPrefix === "" || qPrefix === "")) {
-          // One has prefix stripped (e.g., Q1 vs 1) — consider strong match
+        } else if (labelNum === qNum && isQPrefix(labelPrefix) && isQPrefix(qPrefix) && labelStripped === qStripped) {
+          // This is covered above, but keep for Q1 vs 1
           evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.88, `Label ${reg.questionLabel} matched ${q.normalizedNumber} (prefix-insensitive)`, 0.9));
+        } else if (labelNum === qNum && (isQPrefix(labelPrefix) || isQPrefix(qPrefix)) && labelNum === qNum) {
+          // One has Q/empty and stripped equal — e.g., Q1 vs 1
+          // But ensure part matches: if one is 2 and other is 2(a), they are not equal stripped, so not here
+          if (labelStripped === qStripped) {
+            evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.88, `Label ${reg.questionLabel} matched ${q.normalizedNumber} (prefix-insensitive)`, 0.9));
+          } else {
+            // Same number but different part (e.g., 2 vs 2(a)) — penalize
+            evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.35, `Part mismatch ${reg.questionLabel} vs ${q.normalizedNumber}`, 0.7));
+          }
         } else if (labelNum === qNum) {
-          // Same number but different prefix (e.g., 2 vs T5? No, 2 vs 5 is different number, so not here)
-          // For 2 vs T5, labelNum 2 vs qNum 5 -> not equal, so not here
           evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.4, `Same number different prefix ${reg.questionLabel} vs ${q.normalizedNumber}`, 0.6));
         } else if (parsedLabel && q.normalizedNumber.includes(parsedLabel)) {
           evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.6, `Partial label ${reg.questionLabel} vs ${q.normalizedNumber}`, 0.7));

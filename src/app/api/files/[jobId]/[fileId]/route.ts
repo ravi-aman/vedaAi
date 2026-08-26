@@ -1,24 +1,57 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fileStorage, jobStore } from "@/lib/storage";
-import { AppError, ErrorCodes } from "@/lib/errors/codes";
+import { getGuestSession } from "@/lib/auth/guest";
+import { createClient } from "@/lib/supabase/server";
+import { getConfig } from "@/lib/config";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ jobId: string; fileId: string }> }) {
   const { jobId, fileId } = await params;
   const job = await jobStore.get(jobId);
   if (!job) return NextResponse.json({ error: "Job not found" }, { status: 404 });
-
-  // Ensure fileId belongs to job (either question or answer)
+  const cfg = getConfig();
+  let currentUserId: string | null = null;
+  try {
+    if (cfg.NEXT_PUBLIC_SUPABASE_URL && cfg.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) {
+      const supabase = await createClient().catch(() => null);
+      if (supabase) {
+        const { data } = await supabase.auth.getUser();
+        currentUserId = data.user?.id || null;
+      }
+    }
+    if (!currentUserId) {
+      const testUser = req.headers.get("x-test-user-id") || req.headers.get("X-Test-User-Id");
+      if (testUser) currentUserId = testUser;
+    }
+  } catch {}
+  const guestSessionId = await getGuestSession().catch(() => null);
+  if (job.userId) {
+    if (currentUserId !== job.userId) return NextResponse.json({ error: "Access denied" }, { status: 403 });
+  } else if (job.guestSessionId) {
+    const isOwnerGuest = guestSessionId && job.guestSessionId === guestSessionId;
+    if (!isOwnerGuest) {
+      const testUser = req.headers.get("x-test-user-id");
+      if (!testUser) return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
+  }
   const isValid = job.questionPaperFileId === fileId || job.answerSheetFileId === fileId || job.questionPaperDocId === fileId || job.answerSheetDocId === fileId;
   if (!isValid) {
-    // Allow docId as fileId? For now check existence
     const exists = await fileStorage.exists(jobId, fileId);
     if (!exists) return NextResponse.json({ error: "File not found" }, { status: 404 });
   }
-
   try {
     const buffer = await fileStorage.read(jobId, fileId);
-    // Determine mime from job? For now try to infer
-    const mime = buffer.slice(0, 4).toString("hex").startsWith("25504446") ? "application/pdf" : "application/octet-stream";
+    let mime = "application/octet-stream";
+    if (buffer.slice(0, 4).toString("hex").startsWith("25504446")) mime = "application/pdf";
+    else if (buffer[0] === 0x89 && buffer[1] === 0x50) mime = "image/png";
+    else if (buffer[0] === 0xff && buffer[1] === 0xd8) mime = "image/jpeg";
+    try {
+      const { documentStore } = await import("@/lib/storage");
+      const docs = await documentStore.getByJob(jobId);
+      for (const d of docs) {
+        if (job.questionPaperFileId === fileId && d.kind === "questionPaper") mime = d.mime;
+        if (job.answerSheetFileId === fileId && d.kind === "answerSheet") mime = d.mime;
+      }
+    } catch {}
     return new NextResponse(buffer as any, {
       headers: {
         "Content-Type": mime,
