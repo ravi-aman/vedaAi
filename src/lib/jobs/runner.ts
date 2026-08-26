@@ -198,13 +198,55 @@ async function extracting(jobId: string, prep: any) {
 
   const provider = getAIProvider();
 
-  // For vision, we need imageBase64. For now use placeholder if real PDF rendering not available
-  // In production, render PDF pages to PNG via pdfjs + canvas. For stub, send empty placeholder and rely on mock
+  // For vision, use real file content base64 (not placeholder) — supports PDF and image
+  // For PDFs, send as file data (detected via JVBER header), for images send as image
+  async function buildVisionInput(doc: any, pages: any[], fileId: string) {
+    try {
+      const buffer = await fileStorage.read(jobId, fileId);
+      const b64 = buffer.toString("base64");
+      // For image docs, single image; for PDF, send whole PDF as file data in first page entry
+      // Detect PDF by magic: %PDF
+      const isPdf = buffer.slice(0, 4).toString() === "%PDF";
+      if (isPdf) {
+        // Send PDF as single entry with pdfBase64 marker (provider will detect JVBER)
+        // Keep pageId for traceability
+        return {
+          pages: [{ pageId: pages[0]?.id || "p1", imageBase64: b64 }],
+          isPdf: true,
+          mime: "application/pdf",
+        };
+      } else {
+        // Image — send per page (single)
+        return {
+          pages: pages.map((p) => ({ pageId: p.id, imageBase64: b64 })),
+          isPdf: false,
+          mime: doc.mime,
+        };
+      }
+    } catch (e) {
+      console.warn("[extracting] failed to read file for vision, using placeholder", e);
+      return {
+        pages: pages.map((p) => ({ pageId: p.id, imageBase64: placeholderPngBase64(p.pageNumber) })),
+        isPdf: false,
+        mime: "image/png",
+      };
+    }
+  }
+
+  const qpFileId = job.questionPaperFileId!;
+  const asFileId = job.answerSheetFileId!;
+  const qpVision = await buildVisionInput(qpDoc, qpPages, qpFileId);
+  const asVision = await buildVisionInput(asDoc, asPages, asFileId);
+
   const qpInput = {
-    pages: qpPages.map((p) => ({ pageId: p.id, imageBase64: placeholderPngBase64(p.pageNumber) })),
+    pages: qpVision.pages as any,
+    hints: [] as string[],
+    // Include text extraction for question paper if PDF to help model
+    fileMime: qpVision.mime,
   };
   const asInput = {
-    pages: asPages.map((p) => ({ pageId: p.id, imageBase64: placeholderPngBase64(p.pageNumber) })),
+    pages: asVision.pages as any,
+    fileMime: asVision.mime,
   };
 
   let qpExtracted, asDetected;
