@@ -9,7 +9,11 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "ai:smoke-test": "tsx scripts/ai-smoke.ts",
+    "assessment:smoke-test": "tsx scripts/assessment-smoke.ts",
+    "audit": "tsx scripts/audit.ts",
+    "evaluate": "tsx scripts/evaluate.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.5",
@@ -33,6 +37,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.3",
     "tailwindcss": "^4",
+    "tsx": "^4.21.0",
     "typescript": "^5",
     "vitest": "^4.1.11"
   },

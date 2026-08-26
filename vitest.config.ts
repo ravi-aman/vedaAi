@@ -6,6 +6,11 @@ export default defineConfig({
     include: ["tests/unit/**/*.test.ts", "tests/integration/**/*.test.ts"],
     environment: "node",
     globals: true,
+    env: {
+      AI_PROVIDER: "mock",
+      AI_MODEL: "mock-model",
+      AI_API_KEY: "test-key",
+    },
   },
   resolve: {
     alias: {

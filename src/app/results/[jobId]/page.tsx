@@ -3,6 +3,7 @@ import React, { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { QuestionCard } from "@/components/results/QuestionCard";
 import { ViewerShell } from "@/components/viewer/Viewer";
+import { AuthGate } from "@/components/auth/AuthGate";
 import type { ProcessingResult, QuestionResult } from "@/types";
 
 export default function ResultsPage() {
@@ -11,17 +12,95 @@ export default function ResultsPage() {
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mobileTab, setMobileTab] = useState<"questions" | "viewer">("questions");
+  const [showAuthGate, setShowAuthGate] = useState(false);
+  const [authGateDismissed, setAuthGateDismissed] = useState(false);
+  const [jobCreatedAt, setJobCreatedAt] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`/api/jobs/${params.jobId}/result`)
-      .then(async (res) => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const res = await fetch(`/api/jobs/${params.jobId}/result`);
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Failed to load result");
-        setResult(data);
-        if (data.questionResults?.[0]) setSelectedId(data.questionResults[0].question.id);
-      })
-      .catch((e) => setError(e.message));
+        if (!res.ok) {
+          if (data.code === "AUTH_REQUIRED" || res.status === 401) {
+            if (!cancelled) setShowAuthGate(true);
+            throw new Error(data.error || "Authentication required");
+          }
+          throw new Error(data.error || "Failed to load result");
+        }
+        if (!cancelled) {
+          setResult(data);
+          if (data.questionResults?.[0]) setSelectedId(data.questionResults[0].question.id);
+        }
+        // fetch job for grace timer
+        try {
+          const jobRes = await fetch(`/api/jobs/${params.jobId}`);
+          const jobData = await jobRes.json();
+          if (jobRes.ok && jobData.job?.createdAt) {
+            if (!cancelled) setJobCreatedAt(jobData.job.createdAt);
+          }
+        } catch {}
+      } catch (e: any) {
+        if (!cancelled) setError(e.message);
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
   }, [params.jobId]);
+
+  // Guest grace timer — show AuthGate after 90s (configurable via env, default 90000)
+  useEffect(() => {
+    if (!result || !jobCreatedAt || showAuthGate) return;
+    // Check if already authenticated — skip timer and try claim
+    (async () => {
+      try {
+        const { createClient } = await import("@/lib/supabase/client");
+        const supabase = createClient();
+        const { data } = await supabase.auth.getUser();
+        if (data.user) {
+          // auto-claim guest result for authenticated user
+          await fetch(`/api/jobs/${params.jobId}/claim`, { method: "POST" }).catch(() => {});
+          return; // authenticated, no gate
+        }
+      } catch {
+        // supabase not configured, fall through to guest timer
+      }
+      const GUEST_GRACE_MS = 90000; // should match GUEST_RESULT_GRACE_PERIOD_MS
+      const created = new Date(jobCreatedAt).getTime();
+      const elapsed = Date.now() - created;
+      const remaining = GUEST_GRACE_MS - elapsed;
+      if (remaining <= 0) {
+        setShowAuthGate(true);
+        return;
+      }
+      const t = setTimeout(() => setShowAuthGate(true), remaining);
+      return () => clearTimeout(t);
+    })();
+  }, [result, jobCreatedAt, showAuthGate, params.jobId]);
+
+  // Auto-claim when user signs in while viewing result
+  useEffect(() => {
+    if (!result) return;
+    let cancelled = false;
+    const interval = setInterval(async () => {
+      try {
+        const { createClient } = await import("@/lib/supabase/client");
+        const supabase = createClient();
+        const { data } = await supabase.auth.getUser();
+        if (data.user && !cancelled) {
+          const res = await fetch(`/api/jobs/${params.jobId}/claim`, { method: "POST" });
+          if (res.ok && !cancelled) {
+            setShowAuthGate(false);
+            setAuthGateDismissed(false);
+          }
+        }
+      } catch {}
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [result, params.jobId]);
 
   // fetch pages for viewer (from documents)
   const [pages, setPages] = useState<any[]>([]);
@@ -95,8 +174,21 @@ export default function ResultsPage() {
 
   const unmatched = result.unmatchedAnswers;
 
+  const handleClaimAndReload = async () => {
+    try {
+      await fetch(`/api/jobs/${params.jobId}/claim`, { method: "POST" });
+    } catch {}
+    window.location.reload();
+  };
+
   return (
     <div className="min-h-screen bg-[#F7F7F7] flex flex-col">
+      {showAuthGate && !authGateDismissed && (
+        <AuthGate
+          jobId={params.jobId}
+          onClose={() => setAuthGateDismissed(true)}
+        />
+      )}
       <header className="h-[56px] bg-white border-b border-gray-200 flex items-center px-4 sm:px-6 justify-between shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-[#FF6B2C] flex items-center justify-center text-white font-bold text-[13px]">V</div>

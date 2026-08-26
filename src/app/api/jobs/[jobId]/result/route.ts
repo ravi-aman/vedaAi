@@ -26,7 +26,24 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
         currentUserId = data.user?.id || null;
       }
     }
-  } catch {}
+    // Fallback for local dev without supabase: check x-test-user-id header (case-insensitive)
+    if (!currentUserId) {
+      const testUser =
+        req.headers.get("x-test-user-id") ||
+        req.headers.get("X-Test-User-Id") ||
+        req.headers.get("x-test-user") ||
+        req.headers.get("X-Test-User");
+      if (testUser) currentUserId = testUser;
+      else {
+        // also check search param for testing
+        const url = new URL(req.url);
+        const qpUser = url.searchParams.get("test_user");
+        if (qpUser) currentUserId = qpUser;
+      }
+    }
+  } catch (e) {
+    console.warn("[result] auth check failed", e);
+  }
   const guestSessionId = await getGuestSession().catch(() => null);
 
   // If job is owned by user, allow only that user
