@@ -113,10 +113,10 @@ export default function UploadPage() {
         <TopHeader onMenuClick={() => setMobileOpen(true)} mobileDrawerOpen={mobileOpen} />
 
         <main className="flex-1 flex flex-col items-center px-4 md:px-6 py-6 md:py-8 overflow-auto bg-transparent min-h-0">
-          <div className="w-full max-w-[560px] flex flex-col items-center">
-            {/* Heading */}
-            <h1 className="text-center text-[22px] md:text-[30px] font-bold tracking-tight leading-tight text-[#0A0A0A]">
-              <span className="block md:inline">Upload</span>
+          <div className="w-full max-w-[760px] flex flex-col items-center">
+            {/* Heading — single line on desktop */}
+            <h1 className="text-center text-[22px] md:text-[28px] lg:text-[30px] font-bold tracking-tight leading-tight text-[#0A0A0A] md:whitespace-nowrap">
+              <span className="inline">Upload </span>
               <span className="inline-block bg-[#FDE3D8] md:bg-[rgba(241,80,47,0.12)] px-2 py-0.5 rounded-[8px] text-[#0A0A0A] md:text-[#F1502F]">
                 Question Paper & Answer Sheets
               </span>

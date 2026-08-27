@@ -122,24 +122,24 @@ export function UploadCard({ kind, title, accentWord, file, onFileSelect, onRemo
   );
 }
 
-/** Decorative avatar with peach ring + 4 dots — matches Figma ~84px */
+/** Decorative avatar with peach ring + 4 dots — enlarged per request */
 export function UploadAvatar() {
   return (
-    <div className="relative w-[84px] h-[84px] lg:w-[96px] lg:h-[96px] flex items-center justify-center">
+    <div className="relative w-[112px] h-[112px] md:w-[132px] md:h-[132px] lg:w-[148px] lg:h-[148px] flex items-center justify-center">
       {/* outer peach ring */}
       <div className="absolute inset-0 rounded-full bg-[#FDE3D8]/70" />
-      <div className="absolute inset-[7px] rounded-full bg-white shadow-sm overflow-hidden border border-white">
+      <div className="absolute inset-[8px] md:inset-[9px] rounded-full bg-white shadow-sm overflow-hidden border border-white">
         <img
           src="/lady.png"
           alt=""
-          className="w-full h-full object-cover"
+          className="w-full h-full object-cover object-top scale-[1.02]"
         />
       </div>
       {/* 4 decorative dots around ring */}
-      <span className="absolute w-2 h-2 rounded-full bg-[#F1502F]" style={{ top: "6%", right: "22%" }} />
-      <span className="absolute w-2 h-2 rounded-full bg-[#F1502F]/80" style={{ top: "38%", right: "2%" }} />
-      <span className="absolute w-1.5 h-1.5 rounded-full bg-[#F1502F]/70" style={{ bottom: "14%", left: "14%" }} />
-      <span className="absolute w-1.5 h-1.5 rounded-full bg-[#F1502F]/60" style={{ top: "44%", left: "2%" }} />
+      <span className="absolute w-2.5 h-2.5 rounded-full bg-[#F1502F]" style={{ top: "6%", right: "20%" }} />
+      <span className="absolute w-2.5 h-2.5 rounded-full bg-[#F1502F]/80" style={{ top: "38%", right: "1%" }} />
+      <span className="absolute w-2 h-2 rounded-full bg-[#F1502F]/70" style={{ bottom: "13%", left: "13%" }} />
+      <span className="absolute w-2 h-2 rounded-full bg-[#F1502F]/60" style={{ top: "44%", left: "0.5%" }} />
     </div>
   );
 }
