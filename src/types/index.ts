@@ -9,6 +9,8 @@ export type ProcessingStage =
   | "OCR_PROCESSING"
   | "OCR_COMPLETED"
   | "OCR_FAILED"
+  | "VISION"
+  | "FUSION"
   | "EXTRACTING"
   | "STRUCTURING"
   | "MATCHING"

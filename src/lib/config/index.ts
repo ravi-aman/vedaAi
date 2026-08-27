@@ -1,14 +1,34 @@
 import { z } from "zod";
 
+const OPENROUTER_DEFAULT_MODEL = "qwen/qwen3-vl-32b-instruct";
+const OPENROUTER_DEFAULT_BASE = "https://openrouter.ai/api/v1";
+
 const envSchema = z.object({
-  AI_PROVIDER: z.enum(["opencode-zen", "openai", "openai-compatible", "mock"]).default("opencode-zen"),
-  AI_MODEL: z.string().default("laguna-s-2.1-free"),
-  AI_API_KEY: z.string().optional(),
-  AI_BASE_URL: z.string().url().optional().or(z.literal("")).default("https://opencode.ai/zen/v1"),
-  // opencode agent compatibility (separate from app runtime)
-  OPENCODE_DEFAULT_MODEL: z.string().optional(),
-  OPENCODE_API_KEY: z.string().optional(),
-  OPENCODE_API_BASE: z.string().optional(),
+  // Canonical LLM provider — OpenRouter + Qwen3-VL (legacy opencode-zen/openai accepted & migrated)
+  AI_PROVIDER: z
+    .string()
+    .default("openrouter")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      if (s === "opencode-zen" || s === "openai" || s === "openai-compatible") return "openrouter";
+      return s;
+    })
+    .pipe(z.enum(["openrouter", "mock"])),
+  AI_MODEL: z.string().default(OPENROUTER_DEFAULT_MODEL),
+  AI_API_KEY: z.string().optional(), // deprecated alias for OPENROUTER_API_KEY
+  AI_BASE_URL: z.string().optional().default(OPENROUTER_DEFAULT_BASE).transform((v) => {
+    if (!v) return OPENROUTER_DEFAULT_BASE;
+    // Migrate legacy opencode URL
+    if (v.includes("opencode.ai")) return OPENROUTER_DEFAULT_BASE;
+    return v;
+  }).pipe(z.string().url().or(z.literal("")).transform((v) => v || OPENROUTER_DEFAULT_BASE)),
+  OPENROUTER_API_KEY: z.string().optional(),
+  OPENROUTER_MODEL: z.string().default(OPENROUTER_DEFAULT_MODEL),
+  OPENROUTER_BASE_URL: z.string().optional().default(OPENROUTER_DEFAULT_BASE).transform((v) => {
+    if (!v) return OPENROUTER_DEFAULT_BASE;
+    if (v.includes("opencode.ai")) return OPENROUTER_DEFAULT_BASE;
+    return v;
+  }).pipe(z.string().url().or(z.literal("")).transform((v) => v || OPENROUTER_DEFAULT_BASE)),
   // mapping thresholds single source
   MAPPING_HIGH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.75),
   MAPPING_REVIEW_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
@@ -16,8 +36,8 @@ const envSchema = z.object({
   MAX_PAGES: z.coerce.number().default(50),
   MAX_CONCURRENT_AI: z.coerce.number().default(2),
   // AI timeouts (ms) — fail fast instead of hanging
-  EXTRACT_TIMEOUT_MS: z.coerce.number().default(30000),
-  DETECT_TIMEOUT_MS: z.coerce.number().default(30000),
+  EXTRACT_TIMEOUT_MS: z.coerce.number().default(60000),
+  DETECT_TIMEOUT_MS: z.coerce.number().default(60000),
   MAPPING_TIMEOUT_MS: z.coerce.number().default(30000),
   // OCR — Amazon Textract (async PDF)
   OCR_PROVIDER: z.enum(["textract", "mock"]).default("textract"),
@@ -34,6 +54,26 @@ const envSchema = z.object({
   OCR_OPERATION_TIMEOUT_MS: z.coerce.number().default(300000),
   OCR_POLL_INTERVAL_MS: z.coerce.number().default(5000),
   OCR_MAX_RETRIES: z.coerce.number().default(3),
+  // Vision — parallel to Textract (evidence-only, grounded to Textract geometry)
+  VISION_PROVIDER: z
+    .string()
+    .default("auto")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      if (s === "opencode-zen") return "openrouter";
+      return s;
+    })
+    .pipe(z.enum(["openrouter", "mock", "auto", "disabled"])),
+  VISION_MODEL: z.string().default(OPENROUTER_DEFAULT_MODEL),
+  VISION_API_KEY: z.string().optional(),
+  VISION_BASE_URL: z.string().optional().default(OPENROUTER_DEFAULT_BASE).transform((v) => {
+    if (!v) return OPENROUTER_DEFAULT_BASE;
+    if (v.includes("opencode.ai")) return OPENROUTER_DEFAULT_BASE;
+    return v;
+  }).pipe(z.string().url().or(z.literal("")).transform((v) => v || OPENROUTER_DEFAULT_BASE)),
+  VISION_ENABLED: z.coerce.boolean().default(true),
+  VISION_MAX_PAGES: z.coerce.number().int().min(1).max(20).default(1),
+  VISION_TIMEOUT_MS: z.coerce.number().default(90000),
   // Supabase
   NEXT_PUBLIC_SUPABASE_URL: z.string().url().optional().or(z.literal("")),
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: z.string().optional(),
@@ -58,8 +98,8 @@ export function getConfig(): AppConfig {
       ...fallback,
       pipelineVersion: process.env.npm_package_version || "0.1.0",
     };
-    if (fallback.AI_PROVIDER !== "mock" && !fallback.AI_API_KEY) {
-      console.warn("[config] AI_API_KEY missing but AI_PROVIDER != mock — will fail at runtime with CONFIGURATION_ERROR");
+    if (fallback.AI_PROVIDER !== "mock" && !fallback.OPENROUTER_API_KEY && !fallback.AI_API_KEY) {
+      console.warn("[config] OPENROUTER_API_KEY missing but AI_PROVIDER != mock — will fail at runtime with CONFIGURATION_ERROR");
     }
     return cached;
   }
@@ -76,14 +116,11 @@ export function clearConfigCache() {
 
 export function requireAiConfig(): AppConfig {
   const cfg = getConfig();
-  if (cfg.AI_PROVIDER !== "mock" && !cfg.AI_API_KEY) {
+  const hasKey = Boolean((cfg as any).OPENROUTER_API_KEY || (cfg as any).AI_API_KEY);
+  if (cfg.AI_PROVIDER !== "mock" && !hasKey) {
     throw new Error(
-      `CONFIGURATION_ERROR: AI_PROVIDER=${cfg.AI_PROVIDER} requires AI_API_KEY. Set AI_API_KEY or use AI_PROVIDER=mock for tests.`
+      `CONFIGURATION_ERROR: AI_PROVIDER=${cfg.AI_PROVIDER} requires OPENROUTER_API_KEY. Set OPENROUTER_API_KEY or use AI_PROVIDER=mock for tests.`
     );
-  }
-  // For opencode-zen, base URL must be zen
-  if (cfg.AI_PROVIDER === "opencode-zen" && !cfg.AI_BASE_URL.includes("opencode.ai")) {
-    console.warn(`[config] AI_PROVIDER=opencode-zen expects AI_BASE_URL https://opencode.ai/zen/v1, got ${cfg.AI_BASE_URL}`);
   }
   return cfg;
 }
@@ -104,13 +141,11 @@ export function requireAwsOcrConfig(): void {
   const missing: string[] = [];
   if (!cfg.AWS_REGION) missing.push("AWS_REGION");
   if (!cfg.AWS_S3_BUCKET) missing.push("AWS_S3_BUCKET");
-  // Credentials: either explicit keys or IAM role (no keys needed). Only fail if bucket missing.
   if (missing.length > 0) {
     throw new Error(`OCR_CONFIGURATION_ERROR: Missing ${missing.join(", ")}. Set env or use OCR_PROVIDER=mock for tests.`);
   }
 }
 
-// Deprecated aliases — kept for migration grep to fail loudly if old code remains
 export function isGoogleOcrConfigured(): boolean {
   return isAwsOcrConfigured();
 }
@@ -132,3 +167,9 @@ export const guestGraceMs = {
     return getConfig().GUEST_RESULT_GRACE_PERIOD_MS;
   },
 };
+
+export const OPENROUTER_CANONICAL = {
+  model: OPENROUTER_DEFAULT_MODEL,
+  baseUrl: OPENROUTER_DEFAULT_BASE,
+  endpoint: `${OPENROUTER_DEFAULT_BASE}/chat/completions`,
+} as const;

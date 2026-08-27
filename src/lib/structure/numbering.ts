@@ -67,12 +67,20 @@ export function normalizeNumber(raw: string): ParsedNumber {
 
   // Check patterns
   const mainMatch = normalized.match(/^([A-Z]?\d+)$/i);
+  const numberRomanDirect = normalized.match(/^(\d+)\(([ivx]+|[0-9]+)\)$/i);
   const partMatch = normalized.match(/^([A-Z]?\d+)\(?([a-z])\)?$/i);
   const subPartMatch = normalized.match(/^([A-Z]?\d+)\(?([a-z])\)?\(?([ivx]+|[0-9]+)\)?$/i);
   const letterOnly = normalized.match(/^\(([a-z])\)$/i);
   const romanOnly = normalized.match(/^\(([ivx]+)\)$/i) || normalized.match(/^[ivx]+$/i);
 
-  if (subPartMatch && subPartMatch[3]) {
+  if (numberRomanDirect) {
+    const base = numberRomanDirect[1];
+    const roman = numberRomanDirect[2].toLowerCase();
+    normalized = `${base}(${roman})`;
+    depth = 1;
+    partType = "PART";
+    parent = base;
+  } else if (subPartMatch && subPartMatch[3]) {
     const base = subPartMatch[1];
     const letter = subPartMatch[2].toLowerCase();
     const sub = subPartMatch[3].toLowerCase();

@@ -52,10 +52,31 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
         if (job.answerSheetFileId === fileId && d.kind === "answerSheet") mime = d.mime;
       }
     } catch {}
+    const range = req.headers.get("range");
+    if (range) {
+      const match = range.match(/bytes=(\d+)-(\d*)/);
+      if (match) {
+        const start = parseInt(match[1], 10);
+        const end = match[2] ? parseInt(match[2], 10) : buffer.length - 1;
+        const sliced = buffer.slice(start, Math.min(end + 1, buffer.length));
+        return new NextResponse(sliced as any, {
+          status: 206,
+          headers: {
+            "Content-Type": mime,
+            "Content-Length": String(sliced.length),
+            "Content-Range": `bytes ${start}-${start + sliced.length - 1}/${buffer.length}`,
+            "Accept-Ranges": "bytes",
+            "Content-Disposition": `inline; filename="${fileId}"`,
+            "Cache-Control": "private, max-age=60",
+          },
+        });
+      }
+    }
     return new NextResponse(buffer as any, {
       headers: {
         "Content-Type": mime,
         "Content-Length": String(buffer.length),
+        "Accept-Ranges": "bytes",
         "Content-Disposition": `inline; filename="${fileId}"`,
         "Cache-Control": "private, max-age=60",
       },

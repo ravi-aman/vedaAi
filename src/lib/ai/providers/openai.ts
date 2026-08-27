@@ -10,13 +10,20 @@ import { getConfig } from "@/lib/config";
 import { AppError, ErrorCodes } from "@/lib/errors/codes";
 
 function getClient(): OpenAI {
-  const cfg = getConfig();
-  if (!cfg.AI_API_KEY) throw new AppError(ErrorCodes.CONFIGURATION_ERROR, "AI_API_KEY missing");
+  const cfg = getConfig() as any;
+  const apiKey = cfg.OPENROUTER_API_KEY || cfg.AI_API_KEY;
+  if (!apiKey) throw new AppError(ErrorCodes.CONFIGURATION_ERROR, "OPENROUTER_API_KEY missing. Set OPENROUTER_API_KEY (legacy AI_API_KEY also accepted during migration)");
+  const baseURL = cfg.OPENROUTER_BASE_URL || cfg.AI_BASE_URL || "https://openrouter.ai/api/v1";
+  const sanitizedBase = baseURL.replace(/\/chat\/completions\/?$/, "").replace(/\/$/, "");
   return new OpenAI({
-    apiKey: cfg.AI_API_KEY,
-    baseURL: cfg.AI_BASE_URL || undefined,
+    apiKey,
+    baseURL: sanitizedBase,
     timeout: 90000,
     maxRetries: 0,
+    defaultHeaders: {
+      "HTTP-Referer": cfg.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
+      "X-Title": "VedaAI",
+    },
   });
 }
 

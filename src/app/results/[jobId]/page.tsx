@@ -190,6 +190,17 @@ export default function ResultsPage() {
   const activePageId = highlights[0]?.pageId;
 
   const unmatched = result.unmatchedAnswers;
+  // Hierarchy: top-level = depth 0
+  const topLevel = result.questionResults.filter((qr) => qr.question.depth === 0 || !qr.question.parentQuestionId);
+  const childrenByParent = new Map<string, typeof result.questionResults>();
+  for (const qr of result.questionResults) {
+    if (qr.question.parentQuestionId) {
+      const arr = childrenByParent.get(qr.question.parentQuestionId) || [];
+      arr.push(qr);
+      childrenByParent.set(qr.question.parentQuestionId, arr);
+    }
+  }
+  const topLevelCount = topLevel.length;
 
   const handleClaimAndReload = async () => {
     try {
@@ -213,12 +224,12 @@ export default function ResultsPage() {
           <span className="hidden sm:inline text-gray-300 mx-2">/</span>
           <span className="hidden sm:inline text-sm text-gray-600">Results</span>
         </div>
-        <div className="text-xs text-gray-500 hidden sm:block">{result.questions.length} questions • {result.answers.length} answers</div>
+        <div className="text-xs text-gray-500 hidden sm:block">{topLevelCount} questions • {result.answers.length} answers {result.questions.length !== topLevelCount ? `(${result.questions.length} total incl. subparts)` : ""}</div>
       </header>
 
       {/* Mobile tab */}
       <div className="lg:hidden bg-white border-b flex">
-        <button onClick={() => setMobileTab("questions")} className={`flex-1 py-3 text-sm font-medium border-b-2 ${mobileTab === "questions" ? "border-[#FF6B2C] text-[#FF6B2C]" : "border-transparent text-gray-500"}`}>Questions ({result.questionResults.length})</button>
+        <button onClick={() => setMobileTab("questions")} className={`flex-1 py-3 text-sm font-medium border-b-2 ${mobileTab === "questions" ? "border-[#FF6B2C] text-[#FF6B2C]" : "border-transparent text-gray-500"}`}>Questions ({topLevelCount})</button>
         <button onClick={() => setMobileTab("viewer")} className={`flex-1 py-3 text-sm font-medium border-b-2 ${mobileTab === "viewer" ? "border-[#FF6B2C] text-[#FF6B2C]" : "border-transparent text-gray-500"}`}>Answer Sheet</button>
       </div>
 
@@ -229,10 +240,26 @@ export default function ResultsPage() {
         >
           <div className="p-4 border-b border-gray-100">
             <h2 className="font-semibold text-sm">Questions</h2>
-            <p className="text-xs text-gray-500">{result.questions.length} extracted in original order</p>
+            <p className="text-xs text-gray-500">{topLevelCount} top-level • {result.questions.length} total incl. subparts</p>
           </div>
           <div className="flex-1 overflow-auto p-3 space-y-2">
-            {result.questionResults.map((qr) => (
+            {topLevel.map((qr) => {
+              const children = childrenByParent.get(qr.question.id) || [];
+              return (
+                <div key={qr.question.id} className="space-y-2">
+                  <QuestionCard result={qr} isSelected={selectedId === qr.question.id} onSelect={() => setSelectedId(qr.question.id)} />
+                  {children.length > 0 && (
+                    <div className="ml-4 pl-3 border-l-2 border-gray-100 space-y-2">
+                      {children.map((child) => (
+                        <QuestionCard key={child.question.id} result={child} isSelected={selectedId === child.question.id} onSelect={() => setSelectedId(child.question.id)} />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {/* Render any orphan subparts that have no parent found (should not happen) */}
+            {result.questionResults.filter((qr) => qr.question.depth !== 0 && !qr.question.parentQuestionId && !topLevel.includes(qr) && !Array.from(childrenByParent.values()).flat().includes(qr)).map((qr) => (
               <QuestionCard key={qr.question.id} result={qr} isSelected={selectedId === qr.question.id} onSelect={() => setSelectedId(qr.question.id)} />
             ))}
           </div>

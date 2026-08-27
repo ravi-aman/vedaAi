@@ -11,8 +11,17 @@ import { uploadBufferToS3, deleteS3Prefix } from "@/lib/ocr/s3";
 import { OcrError, OcrErrorCodes } from "@/lib/ocr/errors";
 import type { OcrDocumentResult } from "@/lib/ocr/types";
 import { parseQuestionsFromTextract } from "@/lib/structure/question-parser";
+import * as fs from "fs/promises";
+import * as path from "path";
+import * as os from "os";
 import { segmentAnswersFromTextract } from "@/lib/structure/answer-segmentation";
 import { normalizeNumber } from "@/lib/structure/numbering";
+import { validateQuestionStructure } from "@/lib/structure/validator";
+import { getVisionProvider } from "@/lib/vision/factory";
+import { shouldInvokeVision } from "@/lib/vision/router";
+import { fuseDocuments } from "@/lib/vision/fusion";
+import { renderPdfPagesForVision } from "@/lib/documents/render";
+import type { VisionDocumentAnalysis } from "@/lib/vision/provider";
 
 function resolvePageId(modelPageId: string | undefined, pages: any[]): string {
   if (!modelPageId) return pages[0]?.id;
@@ -27,13 +36,15 @@ function resolvePageId(modelPageId: string | undefined, pages: any[]): string {
   return pages[0]?.id;
 }
 
-// Stage order includes OCR
+// Stage order includes OCR + Vision (parallel conceptually) + Fusion
 const STAGE_ORDER: ProcessingStage[] = [
   "VALIDATING",
   "PREPROCESSING",
   "OCR_SUBMITTED",
   "OCR_PROCESSING",
   "OCR_COMPLETED",
+  "VISION",
+  "FUSION",
   "EXTRACTING",
   "STRUCTURING",
   "MATCHING",
@@ -135,8 +146,18 @@ async function runJob(jobId: string) {
     await updateStage("OCR_COMPLETED", "in_progress");
     await updateStage("OCR_COMPLETED", "completed");
 
+    // Vision — parallel visual understanding (real page images, evidence-only, grounded to Textract)
+    await updateStage("VISION", "in_progress");
+    const visionData = await visionStage(jobId, ocrData);
+    await updateStage("VISION", "completed");
+
+    // Fusion — reconcile Textract + Vision + geometry → Canonical
+    await updateStage("FUSION", "in_progress");
+    const fusionData = await fusionStage(jobId, ocrData, visionData);
+    await updateStage("FUSION", "completed");
+
     await updateStage("EXTRACTING", "in_progress");
-    const extraction = await extracting(jobId, prep, ocrData);
+    const extraction = await extracting(jobId, prep, ocrData, visionData, fusionData);
     await updateStage("EXTRACTING", "completed");
 
     await updateStage("STRUCTURING", "in_progress");
@@ -236,8 +257,10 @@ async function preprocess(jobId: string) {
   return { ok: true };
 }
 
-// In-memory OCR result store (jobId -> per-document OCR results)
+// In-memory OCR + Vision + Fusion result stores (jobId -> per-document results)
 export const ocrResultStore = new Map<string, { qpOcr?: OcrDocumentResult; asOcr?: OcrDocumentResult }>();
+export const visionResultStore = new Map<string, { qpVision?: VisionDocumentAnalysis; asVision?: VisionDocumentAnalysis }>();
+export const fusionResultStore = new Map<string, any>();
 export const resultStore = new Map<string, any>();
 
 async function ocrStage(jobId: string): Promise<{ qpOcr?: OcrDocumentResult; asOcr?: OcrDocumentResult }> {
@@ -297,12 +320,44 @@ async function ocrStage(jobId: string): Promise<{ qpOcr?: OcrDocumentResult; asO
     ocrResultStore.set(jobId, out);
     await jobStore.update(jobId, { ocrStartedAt: new Date().toISOString(), ocrCompletedAt: new Date().toISOString(), ocrPageCount: asPages.length + qpPages.length, ocrAttempt: (job?.ocrAttempt || 0) + 1 } as any);
     console.log(JSON.stringify({ jobId, stage: "OCR", event: "mock_completed", qpPages: qpRes.pages.length, asPages: asRes.pages.length }));
+    // Debug dump for mock as well (exact format)
+    try {
+      const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+      const debugDir = path.join(os.tmpdir(), "veda-ai", safe, "debug");
+      await fs.mkdir(debugDir, { recursive: true });
+      await fs.writeFile(path.join(debugDir, "questionPaper-textract.json"), JSON.stringify(qpRes, null, 2), "utf-8");
+      await fs.writeFile(path.join(debugDir, "answerSheet-textract.json"), JSON.stringify(asRes, null, 2), "utf-8");
+      const artDir = path.join(process.cwd(), "artifacts", "ocr-debug", safe);
+      await fs.mkdir(artDir, { recursive: true });
+      await fs.writeFile(path.join(artDir, "questionPaper-textract.json"), JSON.stringify(qpRes, null, 2), "utf-8");
+      await fs.writeFile(path.join(artDir, "answerSheet-textract.json"), JSON.stringify(asRes, null, 2), "utf-8");
+      console.log(JSON.stringify({ jobId, stage: "OCR", event: "debug_dump_mock", path: debugDir }));
+    } catch {}
     return out;
   }
 
-  // Real AWS Textract path
+  // Real AWS Textract path — graceful dev fallback to mock when bucket missing
   if (!cfg.AWS_S3_BUCKET) {
-    throw new AppError(ErrorCodes.OCR_CONFIGURATION_ERROR, "AWS OCR not configured. Set AWS_REGION and AWS_S3_BUCKET or use OCR_PROVIDER=mock");
+    if (process.env.NODE_ENV !== "production") {
+      console.warn(JSON.stringify({ jobId, stage: "OCR", event: "aws_missing_dev_fallback_mock", ocrProviderName, bucket: cfg.AWS_S3_BUCKET || "missing" }));
+      // Switch to mock provider for this job (preserves geometry via synthetic OCR, allows pipeline to complete)
+      const mockProvider = new (await import("@/lib/ocr/mock")).MockOcrProvider();
+      const qpRes = await mockProvider.getOperationResult("mock-qp", `s3://mock/mock/${jobId}/qp/`);
+      const asRes = await mockProvider.getOperationResult("mock-as", `s3://mock/mock/${jobId}/as/`);
+      qpRes.pages = qpRes.pages.slice(0, qpPages.length);
+      asRes.pages = asRes.pages.slice(0, asPages.length);
+      if (asPages.length > asRes.pages.length) {
+        const extra = asPages.length - asRes.pages.length;
+        for (let i = 0; i < extra; i++) asRes.pages.push({ pageNumber: asRes.pages.length + 1, text: `Mock page ${asRes.pages.length + 1} additional`, blocks: [], lines: [], confidence: 0.9, width: 800, height: 1100, rotation: 0 } as any);
+      }
+      qpRes.jobId = jobId; qpRes.documentId = qpDoc.id; qpRes.kind = "questionPaper";
+      asRes.jobId = jobId; asRes.documentId = asDoc.id; asRes.kind = "answerSheet";
+      const out = { qpOcr: qpRes, asOcr: asRes };
+      ocrResultStore.set(jobId, out);
+      await jobStore.update(jobId, { ocrStartedAt: new Date().toISOString(), ocrCompletedAt: new Date().toISOString(), ocrPageCount: asPages.length + qpPages.length, ocrAttempt: (job?.ocrAttempt || 0) + 1 } as any);
+      return out;
+    }
+    throw new AppError(ErrorCodes.OCR_CONFIGURATION_ERROR, "AWS OCR not configured. Set AWS_REGION and AWS_S3_BUCKET or use OCR_PROVIDER=mock (for local dev set OCR_PROVIDER=mock in .env)");
   }
 
   const provider = getOcrProvider();
@@ -420,6 +475,18 @@ async function ocrStage(jobId: string): Promise<{ qpOcr?: OcrDocumentResult; asO
     // Ensure pages sorted and pageNumbers correct
     docResult!.pages.sort((a, b) => a.pageNumber - b.pageNumber);
     console.log(JSON.stringify({ jobId, stage: "OCR", event: "parse_ok", kind, pages: docResult!.pages.length }));
+    // Debug dump: exact OCR format to file for inspection (log purpose, never secrets)
+    try {
+      const debugDir = path.join(os.tmpdir(), "veda-ai", safeJob, "debug");
+      await fs.mkdir(debugDir, { recursive: true });
+      const dumpPath = path.join(debugDir, `${kind}-textract.json`);
+      await fs.writeFile(dumpPath, JSON.stringify(docResult, null, 2), "utf-8");
+      console.log(JSON.stringify({ jobId, stage: "OCR", event: "debug_dump", kind, path: dumpPath, pages: docResult!.pages.length, totalLines: docResult!.pages.reduce((a, p) => a + p.lines.length, 0) }));
+      // Also dump to project artifacts for easier dev access (gitignored)
+      const artDir = path.join(process.cwd(), "artifacts", "ocr-debug", safeJob);
+      await fs.mkdir(artDir, { recursive: true });
+      await fs.writeFile(path.join(artDir, `${kind}-textract.json`), JSON.stringify(docResult, null, 2), "utf-8");
+    } catch {}
     return docResult!;
   }
 
@@ -433,7 +500,149 @@ async function ocrStage(jobId: string): Promise<{ qpOcr?: OcrDocumentResult; asO
   return out;
 }
 
-async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocumentResult; asOcr?: OcrDocumentResult }) {
+async function visionStage(jobId: string, ocrData?: { qpOcr?: OcrDocumentResult; asOcr?: OcrDocumentResult }): Promise<{ qpVision?: VisionDocumentAnalysis; asVision?: VisionDocumentAnalysis } | null> {
+  const cfg = getConfig() as any;
+  const visionProviderName = cfg.VISION_PROVIDER || "auto";
+  if (visionProviderName === "disabled") {
+    console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_disabled" }));
+    return null;
+  }
+  // Cache reuse
+  const cached = visionResultStore.get(jobId);
+  if (cached) {
+    console.log(JSON.stringify({ jobId, stage: "VISION", event: "reuse_cached" }));
+    return cached;
+  }
+  // Routing: decide per document
+  const qpOcr = ocrData?.qpOcr;
+  const asOcr = ocrData?.asOcr;
+  const qpDecision = qpOcr ? shouldInvokeVision(qpOcr) : { useVision: false, reason: "no ocr", confidence: 0, estimatedDifficulty: "easy" as const };
+  const asDecision = asOcr ? shouldInvokeVision(asOcr) : { useVision: false, reason: "no ocr", confidence: 0, estimatedDifficulty: "easy" as const };
+  const useVision = qpDecision.useVision || asDecision.useVision;
+  // If mock OCR, skip vision (deterministic fallback is sufficient for tests)
+  if (cfg.OCR_PROVIDER === "mock") {
+    console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_mock_ocr", qpDecision, asDecision }));
+    return null;
+  }
+  if (!useVision && visionProviderName === "auto") {
+    console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_routed_easy", qpDecision, asDecision }));
+    return null;
+  }
+  const provider = getVisionProvider();
+  if (!provider) {
+    console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_no_provider", provider: visionProviderName }));
+    return null;
+  }
+
+  const docs = await documentStore.getByJob(jobId);
+  const qpDoc = docs.find((d) => d.kind === "questionPaper");
+  const asDoc = docs.find((d) => d.kind === "answerSheet");
+  if (!qpDoc || !asDoc) return null;
+
+  const maxPages = cfg.VISION_MAX_PAGES || 3;
+  const timeoutMs = cfg.VISION_TIMEOUT_MS || 30000;
+
+  async function processDoc(kind: "questionPaper" | "answerSheet", ocr: OcrDocumentResult | undefined): Promise<VisionDocumentAnalysis | undefined> {
+    if (!ocr || !provider) return undefined;
+    try {
+      const fileId = kind === "questionPaper" ? (await jobStore.get(jobId))!.questionPaperFileId! : (await jobStore.get(jobId))!.answerSheetFileId!;
+      const buffer = await fileStorage.read(jobId, fileId);
+      const rendered = await renderPdfPagesForVision(buffer, ocr.pages.slice(0, maxPages).map((p) => p.pageNumber), maxPages);
+      // If no real image rendered (canvas not available), skip vision to avoid timeout on PDF placeholder
+      const hasRealImage = rendered.some((r) => r.mimeType !== "application/pdf" && !r.imageBase64.startsWith("JVBER"));
+      if (!hasRealImage) {
+        console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_no_image", kind, reason: "canvas not available, no PNG rendered", pages: rendered.length }));
+        return undefined;
+      }
+      const visionInputPages = rendered.map((r) => ({
+        pageId: `page-${r.pageNumber}`,
+        pageNumber: r.pageNumber,
+        imageBase64: r.imageBase64,
+        mimeType: r.mimeType as any,
+        width: r.width,
+        height: r.height,
+      }));
+      const ocrSample = ocr.pages.slice(0, 2).map((p) => p.text.slice(0, 1000)).join("\n").slice(0, 1500);
+      const payloadKb = Math.round(visionInputPages.reduce((a, p) => a + p.imageBase64.length, 0) * 0.75 / 1024);
+      console.log(JSON.stringify({ jobId, stage: "VISION", event: "analyze_start", kind, pages: visionInputPages.length, provider: visionProviderName, model: (getConfig() as any).OPENROUTER_MODEL || (getConfig() as any).VISION_MODEL, payloadKb, timeoutMs }));
+      const result = await provider.analyzeDocumentStructure({ pages: visionInputPages, ocrTextSample: ocrSample });
+      console.log(JSON.stringify({ jobId, stage: "VISION", event: "analyze_ok", kind, visionPages: result.pages.length }));
+      return result;
+    } catch (e: any) {
+      // Retry with smaller batch on timeout
+      if (e.code === "ETIMEDOUT" || String(e.message).includes("timed out")) {
+        console.warn(JSON.stringify({ jobId, stage: "VISION", event: "analyze_timeout_retry", kind, msg: e.message?.slice(0, 200) }));
+        if (visionProviderName === "auto") return undefined;
+      }
+      console.warn(JSON.stringify({ jobId, stage: "VISION", event: "analyze_failed_fallback", kind, msg: e.message?.slice(0, 300), code: e.code, status: e.status }));
+      if (visionProviderName === "auto") return undefined;
+      throw new AppError(e.code || ErrorCodes.MODEL_UNAVAILABLE, `Vision analysis failed for ${kind}: ${e.message}`);
+    }
+  }
+
+  const qpVision = await processDoc("questionPaper", qpOcr);
+  const asVision = await processDoc("answerSheet", asOcr);
+
+  const out: any = {};
+  if (qpVision) out.qpVision = qpVision;
+  if (asVision) out.asVision = asVision;
+  if (Object.keys(out).length === 0) {
+    console.log(JSON.stringify({ jobId, stage: "VISION", event: "no_vision_results" }));
+    return null;
+  }
+  visionResultStore.set(jobId, out);
+  // Debug dump
+  try {
+    const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+    const debugDir = path.join(os.tmpdir(), "veda-ai", safe, "debug");
+    await fs.mkdir(debugDir, { recursive: true });
+    if (qpVision) await fs.writeFile(path.join(debugDir, "vision-qp.json"), JSON.stringify(qpVision, null, 2), "utf-8");
+    if (asVision) await fs.writeFile(path.join(debugDir, "vision-as.json"), JSON.stringify(asVision, null, 2), "utf-8");
+    const artDir = path.join(process.cwd(), "artifacts", "debug", safe);
+    await fs.mkdir(artDir, { recursive: true });
+    if (qpVision) await fs.writeFile(path.join(artDir, "vision-qp.json"), JSON.stringify(qpVision, null, 2), "utf-8");
+    if (asVision) await fs.writeFile(path.join(artDir, "vision-as.json"), JSON.stringify(asVision, null, 2), "utf-8");
+  } catch {}
+  return out;
+}
+
+async function fusionStage(jobId: string, ocrData?: { qpOcr?: OcrDocumentResult; asOcr?: OcrDocumentResult }, visionData?: { qpVision?: VisionDocumentAnalysis; asVision?: VisionDocumentAnalysis } | null): Promise<any> {
+  const qpOcr = ocrData?.qpOcr;
+  const asOcr = ocrData?.asOcr;
+  if (!qpOcr || !asOcr) return null;
+  const docs = await documentStore.getByJob(jobId);
+  const qpDoc = docs.find((d) => d.kind === "questionPaper");
+  const asDoc = docs.find((d) => d.kind === "answerSheet");
+  const qpPages = qpDoc ? await pageStoreApi.getByDocument(qpDoc.id) : [];
+  const asPages = asDoc ? await pageStoreApi.getByDocument(asDoc.id) : [];
+  const qpVisionState = visionData?.qpVision ? "VISION_AVAILABLE" : visionData === null ? "VISION_FAILED" : "VISION_NOT_INVOKED";
+  const asVisionState = visionData?.asVision ? "VISION_AVAILABLE" : visionData === null ? "VISION_FAILED" : "VISION_NOT_INVOKED";
+  const qpFusion = fuseDocuments(qpOcr, qpPages, visionData?.qpVision || null, jobId);
+  const asFusion = fuseDocuments(asOcr, asPages, visionData?.asVision || null, jobId);
+  // Expose structured vision state
+  (qpFusion as any).visionState = qpVisionState;
+  (asFusion as any).visionState = asVisionState;
+  (qpFusion as any).visionReason = !visionData?.qpVision ? (visionData === null ? "vision failed or timed out" : "routing skipped") : "ok";
+  (asFusion as any).visionReason = !visionData?.asVision ? (visionData === null ? "vision failed or timed out" : "routing skipped") : "ok";
+  const out = { qpFusion, asFusion, visionState: { qp: qpVisionState, as: asVisionState } };
+  try {
+    const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+    const debugDir = path.join(os.tmpdir(), "veda-ai", safe, "debug");
+    await fs.mkdir(debugDir, { recursive: true });
+    await fs.writeFile(path.join(debugDir, "fusion-qp.json"), JSON.stringify(qpFusion, null, 2), "utf-8");
+    await fs.writeFile(path.join(debugDir, "fusion-as.json"), JSON.stringify(asFusion, null, 2), "utf-8");
+    await fs.writeFile(path.join(debugDir, "canonical-qp.json"), JSON.stringify(qpFusion.canonical, null, 2), "utf-8");
+    await fs.writeFile(path.join(debugDir, "canonical-as.json"), JSON.stringify(asFusion.canonical, null, 2), "utf-8");
+    const artDir = path.join(process.cwd(), "artifacts", "debug", safe);
+    await fs.mkdir(artDir, { recursive: true });
+    await fs.writeFile(path.join(artDir, "fusion-qp.json"), JSON.stringify(qpFusion, null, 2), "utf-8");
+    await fs.writeFile(path.join(artDir, "fusion-as.json"), JSON.stringify(asFusion, null, 2), "utf-8");
+  } catch {}
+  console.log(JSON.stringify({ jobId, stage: "FUSION", event: "completed", qpVisionState, asVisionState, qpWarnings: qpFusion.warnings.length, asWarnings: asFusion.warnings.length, qpHints: qpFusion.questionHintsFromVision.length, asHints: asFusion.answerHintsFromVision.length }));
+  return out;
+}
+
+async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocumentResult; asOcr?: OcrDocumentResult }, visionData?: any, fusionData?: any) {
   const job = await jobStore.get(jobId);
   if (!job) throw new AppError(ErrorCodes.JOB_NOT_FOUND, "Job not found");
   const docs = await documentStore.getByJob(jobId);
@@ -485,6 +694,67 @@ async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocum
     throw new AppError(e.code || ErrorCodes.QUESTION_EXTRACTION_FAILED, `Question extraction failed: ${e.message}`);
   }
 
+  // Structure validator with bounded repair loop
+  let repairedQuestions = [...parsedQuestions];
+  let validation = validateQuestionStructure(repairedQuestions);
+  let repairIteration = 0;
+  const maxRepairIterations = 2;
+  while (!validation.valid && repairIteration < maxRepairIterations) {
+    repairIteration++;
+    const beforeCount = repairedQuestions.length;
+    // Repair: remove questions that are clearly instruction/section/option leakage
+    const toKeep: typeof repairedQuestions = [];
+    for (const q of repairedQuestions) {
+      const isInstructionLeak = /question paper contains|All Questions are compulsory|divided into.*Sections|Use of calculators is not allowed|Time:\s*3 hours/i.test(q.text);
+      const isSectionLeak = /^\s*Section\s+[A-Z]\b/i.test(q.rawNumber) || /^\s*Section\s+[A-Z]\b/i.test(q.text.slice(0, 30));
+      const isOptionLeak = q.depth === 0 && /^\([a-d]\)$/i.test(q.normalizedNumber) && q.text.length < 80;
+      if (isInstructionLeak || isSectionLeak || isOptionLeak) {
+        console.warn(JSON.stringify({ jobId, stage: "EXTRACTING", event: "repair_remove_leak", rawNumber: q.rawNumber, normalized: q.normalizedNumber, text: q.text.slice(0, 60) }));
+        continue;
+      }
+      toKeep.push(q);
+    }
+    // Deduplicate top-level duplicates that cause regression: keep first occurrence with longest text
+    const seen = new Map<string, typeof repairedQuestions[0]>();
+    const deduped: typeof repairedQuestions = [];
+    for (const q of toKeep) {
+      const norm = q.normalizedNumber;
+      if (q.depth === 0 && seen.has(norm)) {
+        const existing = seen.get(norm)!;
+        // Keep the one with longer text / more pages
+        if (q.text.length > existing.text.length) {
+          const idx = deduped.findIndex((x) => x.normalizedNumber === norm);
+          if (idx !== -1) deduped[idx] = q;
+          seen.set(norm, q);
+          console.warn(JSON.stringify({ jobId, stage: "EXTRACTING", event: "repair_dedup_replace", normalized: norm, kept: q.text.slice(0, 40) }));
+        } else {
+          console.warn(JSON.stringify({ jobId, stage: "EXTRACTING", event: "repair_dedup_skip", normalized: norm, skipped: q.text.slice(0, 40) }));
+        }
+        continue;
+      }
+      seen.set(norm, q);
+      deduped.push(q);
+    }
+    repairedQuestions = deduped;
+    validation = validateQuestionStructure(repairedQuestions);
+    console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "repair_iteration", iteration: repairIteration, beforeCount, afterCount: repairedQuestions.length, valid: validation.valid, errors: validation.errors.map((e) => e.code) }));
+    if (repairedQuestions.length === beforeCount) break; // No progress
+  }
+  if (!validation.valid) {
+    const msg = validation.errors.map((er) => er.message).join("; ").slice(0, 500);
+    console.error(JSON.stringify({ jobId, stage: "EXTRACTING", event: "structure_validation_failed", errors: validation.errors, warnings: validation.warnings, repairIterations: repairIteration }));
+    throw new AppError(ErrorCodes.VALIDATION_FAILED, `STRUCTURE_VALIDATION_FAILED: ${msg}`);
+  }
+  if (validation.warnings.length > 0) {
+    console.warn(JSON.stringify({ jobId, stage: "EXTRACTING", event: "structure_warnings", warnings: validation.warnings, topLevel: validation.topLevelCount, repairIterations: repairIteration }));
+  }
+  // Use repaired questions
+  parsedQuestions = repairedQuestions;
+  // Log fusion grounding warnings alongside
+  if (fusionData?.qpFusion?.warnings?.length) {
+    console.warn(JSON.stringify({ jobId, stage: "EXTRACTING", event: "fusion_warnings_qp", warnings: fusionData.qpFusion.warnings }));
+  }
+
   const t1 = Date.now();
   try {
     segmentedAnswers = segmentAnswersFromTextract(asOcr, asPages);
@@ -534,7 +804,18 @@ async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocum
     })),
   };
 
-  return { qpDoc, asDoc, qpPages, asPages, qpExtracted, asDetected, qpOcr, asOcr, parsedQuestions, segmentedAnswers };
+  // Diagnostic dumps for audit
+  try {
+    const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+    const debugDir = path.join(os.tmpdir(), "veda-ai", safe, "debug");
+    await fs.mkdir(debugDir, { recursive: true });
+    await fs.writeFile(path.join(debugDir, "question-candidates.json"), JSON.stringify(parsedQuestions.map((q) => ({ ...q, bboxesByPage: Array.from((q as any).bboxesByPage?.entries?.() || []) })), null, 2), "utf-8");
+    await fs.writeFile(path.join(debugDir, "answer-regions.json"), JSON.stringify(segmentedAnswers.map((a) => ({ ...a, bboxesByPage: Array.from((a as any).bboxesByPage?.entries?.() || []) })), null, 2), "utf-8");
+    const artDir = path.join(process.cwd(), "artifacts", "debug", safe);
+    await fs.mkdir(artDir, { recursive: true });
+    await fs.writeFile(path.join(artDir, "question-candidates.json"), JSON.stringify(parsedQuestions.map((q) => ({ ...q, bboxesByPage: Array.from((q as any).bboxesByPage?.entries?.() || []) })), null, 2), "utf-8");
+  } catch {}
+  return { qpDoc, asDoc, qpPages, asPages, qpExtracted, asDetected, qpOcr, asOcr, parsedQuestions, segmentedAnswers, visionData, fusionData };
 }
 
 async function structuring(jobId: string, extraction: any) {

@@ -13,20 +13,22 @@ export interface SegmentedAnswer {
   orderIndex: number;
 }
 
-const ANSWER_LABEL_RE = /^\s*(?:Q\.?\s*|Question\s*|Ans\.?\s*|Ans\s*|Answer\s*)?(\d+[a-z]?\s*(?:\([a-z]\)\s*)?(?:\([ivx0-9]+\))?|\([a-z]\)|\([ivx]+\)|\d+\s*[\.\)])\s*[\.\)\-:\s]*\s*/i;
+const ANSWER_LABEL_RE = /^\s*(?:Q\.?\s*|Question\s*|Ans\.?\s*|Ans\s*|Answer\s*)?(\d+[a-z]?\s*(?:\([a-z]\)\s*)?(?:\([ivx0-9]+\))?|\d+\s*[\.\)]\s*(?:\([a-z]\)\s*)?(?:\([ivx0-9]+\))?)\s*[\.\)\-:\s]*\s*/i;
 
-function detectAnswerLabel(text: string): { raw: string; normalized: string; remaining: string } | null {
+const PAGE_HEADER_RE = /(Page\s*\d+\s*of\s*\d+|Please note that the assessment scheme)/i;
+
+function detectAnswerLabel(text: string, bbox?: { x: number; y: number; width: number; height: number }): { raw: string; normalized: string; remaining: string } | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
+  if (PAGE_HEADER_RE.test(trimmed)) return null;
+  if (/^\s*\d+\s*$/.test(trimmed) && bbox && (bbox.y < 0.04 || bbox.y > 0.92)) return null;
   const m = trimmed.match(ANSWER_LABEL_RE);
   if (!m) return null;
   const full = m[0];
   const remaining = trimmed.slice(full.length).trim();
   const rawCandidate = full.trim().replace(/[\s]+/g, " ").replace(/[\.:\)\-]$/, "").trim();
-  // Must contain digit or parentheses
-  if (!/\d/.test(rawCandidate) && !/^\([a-z]\)$/i.test(rawCandidate) && !/^\([ivx]+\)$/i.test(rawCandidate)) return null;
+  if (!/\d/.test(rawCandidate)) return null;
   if (rawCandidate.length > 20) return null;
-  // Normalize via normalizeNumber for matching
   const parsed = normalizeNumber(rawCandidate);
   return { raw: rawCandidate, normalized: parsed.normalized, remaining };
 }
@@ -89,8 +91,9 @@ export function segmentAnswersFromTextract(
   for (const line of allLines) {
     const text = line.text.trim();
     if (!text) continue;
+    if (PAGE_HEADER_RE.test(text)) continue;
 
-    const detected = detectAnswerLabel(text);
+    const detected = detectAnswerLabel(text, (line as any).boundingBox);
     if (detected) {
       // Start new answer segment
       finalize();
