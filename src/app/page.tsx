@@ -106,13 +106,13 @@ export default function UploadPage() {
   };
 
   return (
-    <div className="h-[100dvh] h-screen bg-[#EDEEF0] flex p-0 md:p-4 gap-0 md:gap-4 overflow-hidden">
+    <div className="h-[100dvh] h-screen bg-[#EDEEF0] flex p-0 md:p-3 gap-0 md:gap-3 overflow-hidden">
       <Sidebar collapsed={sidebarCollapsed} onToggle={handleSidebarToggle} mobileOpen={mobileOpen} onMobileClose={() => setMobileOpen(false)} />
 
-      <div className="flex flex-1 flex-col min-w-0 gap-0 md:gap-4 min-h-0 overflow-hidden">
+      <div className="flex flex-1 flex-col min-w-0 gap-0 md:gap-3 min-h-0 overflow-hidden">
         <TopHeader onMenuClick={() => setMobileOpen(true)} mobileDrawerOpen={mobileOpen} />
 
-        <main className="flex-1 flex flex-col items-center px-4 md:px-6 py-6 md:py-8 overflow-auto card-shell md:rounded-[24px] rounded-none min-h-0">
+        <main className="flex-1 flex flex-col items-center px-4 md:px-6 py-6 md:py-8 overflow-auto bg-transparent min-h-0">
           <div className="w-full max-w-[560px] flex flex-col items-center">
             {/* Heading */}
             <h1 className="text-center text-[22px] md:text-[30px] font-bold tracking-tight leading-tight text-[#0A0A0A]">

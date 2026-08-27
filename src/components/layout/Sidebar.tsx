@@ -122,7 +122,7 @@ export function Sidebar({
     <>
       {/* Desktop + Tablet persistent rail/collapsed/expanded — hidden on mobile (<768), fixed max-height of screen */}
       <aside
-        className="hidden md:flex flex-col shrink-0 card-shell sidebar-anim overflow-hidden sticky top-4 self-start h-[calc(100vh-32px)] h-[calc(100dvh-32px)] max-h-[calc(100vh-32px)] max-h-[calc(100dvh-32px)]"
+        className="hidden md:flex flex-col shrink-0 card-shell sidebar-anim overflow-hidden sticky top-3 self-start h-[calc(100vh-24px)] h-[calc(100dvh-24px)] max-h-[calc(100vh-24px)] max-h-[calc(100dvh-24px)]"
         style={{
           width: collapsed ? "76px" : "264px",
           borderRadius: "24px",
@@ -180,13 +180,10 @@ export function Sidebar({
           <div className="px-[20px]">
             <button
               onClick={() => router.push("/")}
-              className="w-full h-[44px] rounded-full bg-[#0A0A0A] text-white text-[14px] font-medium flex items-center justify-center gap-2 hover:bg-black transition-colors active:scale-[0.97] duration-100"
-              style={{ marginBottom: 24 }}
+              className="w-full h-[44px] rounded-full bg-[#0A0A0A] text-white text-[14px] font-medium flex items-center justify-center gap-2 hover:bg-black transition-colors active:scale-[0.97] duration-100 border border-[#FF5A36]/90"
+              style={{ marginBottom: 24, boxShadow: "0 0 0 1px rgba(255,90,54,0.18)" }}
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M12 5v14M5 12h14" />
-              </svg>
-              AI Teacher&apos;s Toolkit
+              <span className="text-[12px]">✦</span> AI Teacher&apos;s Toolkit
             </button>
           </div>
         )}
@@ -299,7 +296,7 @@ export function Sidebar({
       {mobileOpen && (
         <div className="hidden md:flex lg:hidden fixed inset-0 z-50">
           <button aria-label="Close" onClick={onMobileClose} className="absolute inset-0 bg-black/40 overlay-enter" />
-          <div className="relative w-[264px] card-shell flex flex-col h-[calc(100%-32px)] my-[16px] ml-[16px] p-0 overflow-hidden drawer-enter" style={{ borderRadius: 24 }}>
+          <div className="relative w-[264px] card-shell flex flex-col h-[calc(100%-24px)] my-[12px] ml-[12px] p-0 overflow-hidden drawer-enter" style={{ borderRadius: 24 }}>
             {/* same expanded content inside overlay */}
             <div className="flex items-center justify-between px-[20px] h-[56px] shrink-0">
               <div className="flex items-center gap-3">

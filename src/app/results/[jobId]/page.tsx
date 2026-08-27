@@ -220,10 +220,10 @@ export default function ResultsPage() {
     // If auth is required, show shell with gate instead of bare spinner
     if (showAuthGate) {
       return (
-        <div className="h-[100dvh] h-screen bg-[#EDEEF0] flex flex-col p-0 md:p-4 gap-0 md:gap-4 overflow-hidden">
-          <div className="flex flex-1 min-h-0 gap-0 md:gap-4 overflow-hidden">
+        <div className="h-[100dvh] h-screen bg-[#EDEEF0] flex flex-col p-0 md:p-3 gap-0 md:gap-3 overflow-hidden">
+          <div className="flex flex-1 min-h-0 gap-0 md:gap-3 overflow-hidden">
             <Sidebar collapsed={sidebarCollapsed} onToggle={handleSidebarToggle} mobileOpen={mobileOpen} onMobileClose={() => setMobileOpen(false)} />
-            <div className="flex flex-1 flex-col min-w-0 gap-0 md:gap-4 min-h-0 overflow-hidden">
+            <div className="flex flex-1 flex-col min-w-0 gap-0 md:gap-3 min-h-0 overflow-hidden">
               <TopHeader onMenuClick={() => setMobileOpen(true)} mobileDrawerOpen={mobileOpen} />
               <div className="flex-1 flex items-center justify-center card-shell md:rounded-[20px] bg-white m-0 md:m-0 p-8 min-h-0">
                 <div className="text-center max-w-sm">
@@ -254,13 +254,13 @@ export default function ResultsPage() {
   const handleExpandAll = () => setExpandAll((v) => !v);
 
   return (
-    <div className="h-[100dvh] h-screen bg-[#EDEEF0] flex flex-col p-0 md:p-4 gap-0 md:gap-4 overflow-hidden">
+    <div className="h-[100dvh] h-screen bg-[#EDEEF0] flex flex-col p-0 md:p-3 gap-0 md:gap-3 overflow-hidden">
       {showAuthGate && !authGateDismissed && <AuthGate jobId={params.jobId} onClose={() => setAuthGateDismissed(true)} />}
 
-      <div className="flex flex-1 min-h-0 gap-0 md:gap-4 overflow-hidden">
+      <div className="flex flex-1 min-h-0 gap-0 md:gap-3 overflow-hidden">
         <Sidebar collapsed={sidebarCollapsed} onToggle={handleSidebarToggle} mobileOpen={mobileOpen} onMobileClose={() => setMobileOpen(false)} />
 
-        <div className="flex flex-1 flex-col min-w-0 gap-0 md:gap-4 min-h-0 overflow-hidden">
+        <div className="flex flex-1 flex-col min-w-0 gap-0 md:gap-3 min-h-0 overflow-hidden">
           <TopHeader onMenuClick={() => setMobileOpen(true)} mobileDrawerOpen={mobileOpen} />
 
           {/* Mobile segmented control */}
@@ -282,7 +282,7 @@ export default function ResultsPage() {
           </div>
 
           {/* Two independent rounded cards with 16px gap inside light-gray content area */}
-          <div className="flex flex-1 min-h-0 gap-4 bg-transparent overflow-hidden">
+          <div className="flex flex-1 min-h-0 gap-3 bg-transparent overflow-hidden">
             {/* Left panel — Extracted Questions: white bg, 20px radius, padding 16px */}
             <div className={`flex flex-col shrink-0 bg-white rounded-[20px] card-shell overflow-hidden w-full md:w-[420px] xl:w-[460px] ${mobileTab === "viewer" ? "hidden md:flex" : "flex"}`}>
               <div className="flex items-center justify-between px-4 pt-4 pb-3 shrink-0">

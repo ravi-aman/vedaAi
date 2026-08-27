@@ -44,42 +44,39 @@ export function UploadCard({ kind, title, accentWord, file, onFileSelect, onRemo
     e.target.value = "";
   };
 
-  // File present — show filled card
+  // File present — filled state exactly like Figma image: dashed outer + inner light-gray pill
   if (file) {
     return (
       <div
-        className="relative bg-white rounded-[16px] border border-[#E5E5E5] shadow-[0_2px_8px_rgba(0,0,0,0.04)] p-4 flex items-center gap-3 min-h-[110px] transition-all duration-200"
-        style={{ animation: "fade-in 200ms ease-out" }}
+        className="relative bg-white rounded-[16px] border-[1.5px] border-dashed border-[#ECECEE] p-3 min-h-[110px] transition-all duration-200"
+        style={{ animation: "fade-in 200ms ease-out", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.04)" }}
       >
-        {/* Remove button */}
+        {/* Remove button — dark circle as in Figma */}
         <button
           onClick={(e) => {
             e.stopPropagation();
             onRemove();
           }}
           aria-label="Remove file"
-          className="absolute top-2 right-2 w-6 h-6 rounded-full bg-[#F2F2F3] hover:bg-[#E5E5E5] flex items-center justify-center text-[#111111] transition-colors"
+          className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-[#0A0A0A] hover:bg-black border-2 border-white shadow-sm flex items-center justify-center text-white transition-colors z-10"
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
             <path d="M18 6L6 18M6 6l12 12" />
           </svg>
         </button>
 
-        {/* Red PDF chip */}
-        <div className="w-9 h-9 rounded-[8px] bg-[#FDE3D8] border border-[#F1502F]/20 flex items-center justify-center shrink-0">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="#F1502F">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" fill="#F1502F" />
-            <path d="M14 2v6h6" fill="#FFFFFF" opacity="0.85" />
-            <text x="12" y="17" textAnchor="middle" fontSize="6" fontWeight="700" fill="white">PDF</text>
-          </svg>
-        </div>
-
-        <div className="flex-1 min-w-0 pr-6">
-          <p className="text-[13px] font-medium text-[#111111] truncate leading-tight">{file.name}</p>
-          <p className="text-[12px] text-[#8A8A8E] mt-0.5">
-            {formatSize(file.size)} {file.pageCount ? `• ${file.pageCount} Pages` : ""}
-            {uploading ? " • Uploading…" : ""}
-          </p>
+        {/* Inner light-gray pill with file info */}
+        <div className="bg-[#F7F7F8] rounded-[12px] p-3 flex items-center gap-3 h-full min-h-[88px]">
+          <div className="w-9 h-9 rounded-[8px] bg-[#FFE9E5] border border-[#FFD5CE] flex items-center justify-center shrink-0">
+            <span className="text-[9px] font-black text-[#FF3B30] leading-none">PDF</span>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-[13px] font-semibold text-[#0A0A0A] truncate leading-tight">{file.name}</p>
+            <p className="text-[11px] text-[#8A8A8E] mt-0.5">
+              {formatSize(file.size)} {file.pageCount ? `• ${file.pageCount} Pages` : ""}
+              {uploading ? " • Uploading…" : ""}
+            </p>
+          </div>
         </div>
       </div>
     );
@@ -125,15 +122,15 @@ export function UploadCard({ kind, title, accentWord, file, onFileSelect, onRemo
   );
 }
 
-/** Decorative avatar with peach ring + 4 dots — pure presentational */
+/** Decorative avatar with peach ring + 4 dots — matches Figma ~84px */
 export function UploadAvatar() {
   return (
-    <div className="relative w-[80px] h-[80px] lg:w-[88px] lg:h-[88px] flex items-center justify-center">
+    <div className="relative w-[84px] h-[84px] lg:w-[96px] lg:h-[96px] flex items-center justify-center">
       {/* outer peach ring */}
       <div className="absolute inset-0 rounded-full bg-[#FDE3D8]/70" />
       <div className="absolute inset-[7px] rounded-full bg-white shadow-sm overflow-hidden border border-white">
         <img
-          src="https://i.pravatar.cc/200?img=32"
+          src="/image.png"
           alt=""
           className="w-full h-full object-cover"
         />

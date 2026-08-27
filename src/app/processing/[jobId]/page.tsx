@@ -85,10 +85,10 @@ export default function ProcessingPage() {
   }, [params.jobId, router]);
 
   return (
-    <div className="h-[100dvh] h-screen bg-[#EDEEF0] flex p-0 md:p-4 gap-0 md:gap-4 overflow-hidden">
+    <div className="h-[100dvh] h-screen bg-[#EDEEF0] flex p-0 md:p-3 gap-0 md:gap-3 overflow-hidden">
       <Sidebar collapsed={sidebarCollapsed} onToggle={handleSidebarToggle} mobileOpen={mobileOpen} onMobileClose={() => setMobileOpen(false)} />
 
-      <div className="flex flex-1 flex-col min-w-0 gap-0 md:gap-4 min-h-0 overflow-hidden">
+      <div className="flex flex-1 flex-col min-w-0 gap-0 md:gap-3 min-h-0 overflow-hidden">
         <TopHeader onMenuClick={() => setMobileOpen(true)} mobileDrawerOpen={mobileOpen} />
 
         <main className="flex-1 flex flex-col min-h-0 card-shell md:rounded-[24px] rounded-none overflow-hidden fade-in">
