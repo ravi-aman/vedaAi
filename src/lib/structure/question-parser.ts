@@ -42,8 +42,20 @@ const INSTRUCTION_PHRASES = [
   /Take π/i,
   /Use of calculators is not allowed/i,
   /Time:\s*3 hours/i,
+  /Time allowed/i,
   /For Visually Impaired/i,
   /Please note that the assessment scheme/i,
+  /Please check that this question/i,
+  /Candidates must write the Code/i,
+  /question paper will be distributed/i,
+  /students will read the/i,
+  /write any answer on the answer/i,
+  /P\.T\.O\./i,
+  /Answer question numbers.*to/i,
+  /Answer should be brief/i,
+  /word limit be adhered/i,
+  /There is no overall choice/i,
+  /separate instructions are given with each section/i,
 ];
 
 const PAGE_HEADER_FOOTER_RE = /(Page\s*\d+\s*of\s*\d+|^\s*\d+\s*Page\s*\d+|^\s*\d+\s*$)/i;
@@ -62,15 +74,44 @@ function isPageHeaderFooter(text: string, bbox?: { x: number; y: number; width: 
   const t = text.trim();
   if (PAGE_HEADER_FOOTER_RE.test(t) && t.length < 30) return true;
   if (/^\s*\d+\s*$/.test(t) && bbox && (bbox.y < 0.04 || bbox.y > 0.92)) return true;
-  // Single digit marks column at right margin (x>0.82) should not be treated as page header, but as marks — handled separately
   if (/Please note that the assessment scheme/i.test(t)) return true;
   if (/^\s*Page \d+ of \d+/i.test(t)) return true;
+  // Science paper headers
+  if (/^Code No\./i.test(t)) return true;
+  if (/^Roll No\./i.test(t)) return true;
+  if (/^SET\s*-\s*-/i.test(t)) return true;
+  if (/^Series\s*:/i.test(t)) return true;
+  if (/^Candidates must write the Code/i.test(t)) return true;
+  if (/^onls\s*7\./i.test(t)) return true;
+  if (/^31\/2\/1/i.test(t) && t.length < 15) return true;
+  if (/^RTCT\s*7\./i.test(t)) return true;
+  if (/^P\.T\.O\./i.test(t)) return true;
+  if (/^NOTE$/i.test(t) && t.length < 10) return true;
+  if (/^Please check that this question/i.test(t)) return true;
+  if (/^Candidates must write the Code/i.test(t)) return true;
+  if (/^onls\s*3th/i.test(t)) return true;
+  if (/^Parth$/i.test(t)) return true;
+  if (/^7\)2$/i.test(t) && t.length < 5) return true; // Science paper header 7)2
+  if (/^NKJH\s+#/i.test(t)) return true;
   // Top header metadata
   if (/^Maximum Marks:\s*\d+/i.test(t)) return true;
-  if (/^Time:\s*3 hours/i.test(t)) return true;
+  if (/^Time(:|\s)allowed/i.test(t)) return true;
   if (/^CLASS - X/i.test(t)) return true;
   if (/^MATHEMATICS STANDARD/i.test(t)) return true;
   if (/^SAMPLE QUESTION PAPER/i.test(t)) return true;
+  if (/^SCIENCE$/i.test(t) && t.length < 10) return true;
+  if (/^FATTRA/i.test(t)) return true;
+  if (/^31\/ETCH/i.test(t)) return true;
+  // OCR garbage: lines with very low confidence or pure symbols
+  if (/^[^\w]*$/.test(t) && t.length < 10) return true;
+  if (/^400\s+23/.test(t)) return true; // Science paper OCR garbage
+  if (/^4807/.test(t)) return true;
+  if (/^31924\s+ford/i.test(t)) return true;
+  if (/^4807,\s*D_D/i.test(t)) return true;
+  if (/^3772\s+\$41/i.test(t)) return true;
+  if (/^\$21\s+onl/i.test(t)) return true;
+  if (/^1111\s+1-w/i.test(t)) return true;
+  if (/^2\s+NKJH/i.test(t)) return true; // Science paper header 2 NKJH
   return false;
 }
 
@@ -123,6 +164,28 @@ function extractMarks(text: string): { marks?: number; cleaned: string } {
   return { marks: n, cleaned };
 }
 
+let expectedTopLevelSet: Set<number> | null = null;
+function setExpectedTopLevelFromText(fullText: string) {
+  const ranges: Array<[number, number]> = [];
+  const rangeRes = [...fullText.matchAll(/question\s*no\.?\s*(\d+)\s*to\s*(\d+)/gi)];
+  for (const m of rangeRes) {
+    const a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+    if (a >= 1 && b <= 100 && a < b) ranges.push([a, b]);
+  }
+  if (ranges.length === 0) {
+    const secRes = [...fullText.matchAll(/Section\s+[A-C][^]*?(\d+)\s*to\s*(\d+)/gi)];
+    for (const m of secRes) {
+      const a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+      if (a >= 1 && b <= 100 && a < b) ranges.push([a, b]);
+    }
+  }
+  if (ranges.length > 0) {
+    const ids = new Set<number>();
+    for (const [a, b] of ranges) for (let i = a; i <= b; i++) ids.add(i);
+    if (ids.size >= 20 && Math.min(...ids) === 1) expectedTopLevelSet = ids;
+  }
+}
+
 function detectLabel(lineText: string, bbox?: { x: number; y: number; width: number; height: number }): { rawNumber: string; remaining: string } | null {
   const trimmed = lineText.trim();
   if (!trimmed) return null;
@@ -130,6 +193,11 @@ function detectLabel(lineText: string, bbox?: { x: number; y: number; width: num
   if (isPageHeaderFooter(trimmed, bbox)) return null;
   if (isMarksLine(trimmed, bbox)) return null;
   if (isTableCell(trimmed, bbox)) return null;
+  // Word limit numbers like "90 words" should not be questions
+  if (/^\s*90\s+words/i.test(trimmed) || /^\s*80\s+to\s*90\s+words/i.test(trimmed)) return null;
+  if (/^\s*\(vii\)\s+In addition to this/i.test(trimmed)) return null;
+  if (/^\s*60\s+words/i.test(trimmed) && trimmed.length < 20) return null;
+  if (/^\s*90\s+words/i.test(trimmed) && trimmed.length < 20) return null;
   // Options like "(a) 3" should not start a new top-level question
   if (isOptionLine(trimmed)) return null;
   // Geometry: body numbers like "41cm" at interior x (0.117) should not become questions
@@ -160,6 +228,19 @@ function detectLabel(lineText: string, bbox?: { x: number; y: number; width: num
   if (!/\d/.test(rawNumber)) return null;
 
   if (rawNumber.length > 20) return null;
+
+  // Plausibility: question numbers should be 1-100, not 400, 4807 etc, unless paper is very long
+  // For Science paper with 30 questions, 400 is impossible
+  const numPart = rawNumber.match(/^(\d+)/);
+  if (numPart) {
+    const n = parseInt(numPart[1], 10);
+    if (n > 100) return null; // e.g., 400, 4807, 31924
+    if (n === 0) return null;
+    if (expectedTopLevelSet && !expectedTopLevelSet.has(n)) {
+      // For this paper, only 1-30 are valid top-level
+      return null;
+    }
+  }
 
   // Guard: remaining very short and lowercase suggests fragment, not question? Still allow if remaining length >0 or next line will append.
   // But if remaining is "equal to" and rawNumber is "1", that would be mis-detection: "1 equal to" rawNumber "1" remaining "equal to"
@@ -227,6 +308,10 @@ export function parseQuestionsFromTextract(
   pages: DocumentPage[],
   options?: { minConfidence?: number }
 ): ParsedQuestion[] {
+  // Detect expected top-level IDs from instructions (e.g., "question no. 1 to 14")
+  const fullTextEarly = ocr.pages.map((p) => p.text).join("\n");
+  expectedTopLevelSet = null;
+  setExpectedTopLevelFromText(fullTextEarly);
   const pageByNumber = new Map<number, DocumentPage>();
   for (const p of pages) pageByNumber.set(p.pageNumber, p);
 

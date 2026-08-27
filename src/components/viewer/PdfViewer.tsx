@@ -14,8 +14,8 @@ export function PdfViewer({ pdfUrl, pages, highlights, activePageId }: Props) {
   const [numPages, setNumPages] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const pdfRef = useRef<any>(null);
 
-  // Map pageId (UUID) to pageNumber
   const pageIdToNumber = new Map(pages.map((p) => [p.id, p.pageNumber]));
   const activePageNumber = activePageId ? pageIdToNumber.get(activePageId) : undefined;
 
@@ -26,51 +26,87 @@ export function PdfViewer({ pdfUrl, pages, highlights, activePageId }: Props) {
     }
   }, [activePageNumber]);
 
+  // Load PDF document (store, set numPages, don't render yet)
   useEffect(() => {
     let cancelled = false;
+    let pdfDoc: any = null;
     async function load() {
       try {
         setLoading(true);
         setError(null);
-        // Dynamic import pdfjs to avoid SSR
+        setNumPages(0);
+        pdfRef.current = null;
+
         const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
-        // Use worker from cdn or disable
-        if (pdfjs.GlobalWorkerOptions) {
-          // Use fake worker via disable
+        // Configure worker: try real worker, fallback to disable
+        try {
+          // Use CDN worker matching pdfjs version to avoid bundling issues
+          const version = pdfjs.version || "6.2.108";
+          pdfjs.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/legacy/build/pdf.worker.mjs`;
+        } catch {
           pdfjs.GlobalWorkerOptions.workerSrc = "";
         }
+
+        console.log(`[PdfViewer] loading ${pdfUrl}`);
         const loadingTask = pdfjs.getDocument({
           url: pdfUrl,
           withCredentials: true,
           verbosity: 0,
           isEvalSupported: false,
-          useWorkerFetch: false,
+          useWorkerFetch: true,
           disableFontFace: true,
         });
-        const pdf = await loadingTask.promise;
-        if (cancelled) return;
-        setNumPages(pdf.numPages);
 
-        // Render each page to canvas
-        for (let i = 1; i <= pdf.numPages; i++) {
-          if (cancelled) break;
-          const page = await pdf.getPage(i);
-          const viewport = page.getViewport({ scale: 1.5 });
-          const canvas = document.getElementById(`pdf-canvas-${i}`) as HTMLCanvasElement | null;
-          if (!canvas) continue;
-          const ctx = canvas.getContext("2d");
-          if (!ctx) continue;
-          canvas.width = viewport.width;
-          canvas.height = viewport.height;
-          canvas.style.width = "100%";
-          canvas.style.height = "auto";
-          await page.render({ canvasContext: ctx, viewport }).promise;
-          page.cleanup();
+        loadingTask.onProgress = (progress: any) => {
+          // optional progress
+        };
+
+        pdfDoc = await loadingTask.promise;
+        if (cancelled) {
+          // PDFDocumentProxy in pdfjs-dist 6.x uses cleanup(), loadingTask uses destroy()
+          try {
+            if (pdfDoc && typeof pdfDoc.cleanup === "function") pdfDoc.cleanup();
+            else if (pdfDoc && typeof pdfDoc.destroy === "function") await pdfDoc.destroy();
+          } catch {}
+          try {
+            if (loadingTask && typeof loadingTask.destroy === "function") await loadingTask.destroy();
+          } catch {}
+          return;
         }
-        if (!cancelled) setLoading(false);
-        await pdf.destroy();
+        pdfRef.current = pdfDoc;
+        console.log(`[PdfViewer] loaded ${pdfDoc.numPages} pages`);
+        setNumPages(pdfDoc.numPages);
+        setLoading(false);
       } catch (e: any) {
+        console.error("[PdfViewer] load failed", e);
         if (!cancelled) {
+          // Try fallback without worker
+          if (String(e.message).includes("worker") || String(e.message).includes("Worker")) {
+            try {
+              const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
+              pdfjs.GlobalWorkerOptions.workerSrc = "";
+              const loadingTask2 = pdfjs.getDocument({
+                url: pdfUrl,
+                withCredentials: true,
+                verbosity: 0,
+                isEvalSupported: false,
+                useWorkerFetch: false,
+                disableFontFace: true,
+                // @ts-ignore - disable worker
+                disableWorker: true,
+              } as any);
+              pdfDoc = await loadingTask2.promise;
+              if (!cancelled) {
+                pdfRef.current = pdfDoc;
+                setNumPages(pdfDoc.numPages);
+                setLoading(false);
+                setError(null);
+                return;
+              }
+            } catch (e2: any) {
+              console.error("[PdfViewer] fallback also failed", e2);
+            }
+          }
           setError(e.message || String(e));
           setLoading(false);
         }
@@ -79,39 +115,101 @@ export function PdfViewer({ pdfUrl, pages, highlights, activePageId }: Props) {
     if (pdfUrl) load();
     return () => {
       cancelled = true;
+      // Use loadingTask.destroy() or pdfDoc.cleanup() per pdfjs-dist 6.x API
+      try {
+        if (pdfDoc) {
+          if (typeof pdfDoc.cleanup === "function") pdfDoc.cleanup();
+          else if (typeof pdfDoc.destroy === "function") (pdfDoc as any).destroy().catch(() => {});
+        }
+      } catch {}
+      pdfRef.current = null;
     };
   }, [pdfUrl]);
+
+  // Render pages after pdf loaded and canvases mounted
+  useEffect(() => {
+    if (!pdfRef.current || numPages === 0) return;
+    let cancelled = false;
+    async function renderAll() {
+      const pdf = pdfRef.current;
+      if (!pdf) return;
+      for (let i = 1; i <= pdf.numPages; i++) {
+        if (cancelled) break;
+        // Wait for canvas to be in DOM (after numPages render)
+        let attempts = 0;
+        let canvas: HTMLCanvasElement | null = null;
+        while (attempts < 10 && !canvas) {
+          canvas = document.getElementById(`pdf-canvas-${i}`) as HTMLCanvasElement | null;
+          if (!canvas) {
+            await new Promise((r) => setTimeout(r, 50));
+            attempts++;
+          }
+        }
+        if (!canvas) {
+          console.warn(`[PdfViewer] canvas pdf-canvas-${i} not found after ${attempts} attempts`);
+          continue;
+        }
+        try {
+          const page = await pdf.getPage(i);
+          const viewport = page.getViewport({ scale: 1.5 });
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            page.cleanup();
+            continue;
+          }
+          // Handle high-DPI
+          const dpr = window.devicePixelRatio || 1;
+          canvas.width = viewport.width * dpr;
+          canvas.height = viewport.height * dpr;
+          canvas.style.width = "100%";
+          canvas.style.height = "auto";
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          await page.render({ canvasContext: ctx, viewport } as any).promise;
+          page.cleanup();
+        } catch (e) {
+          console.error(`[PdfViewer] render page ${i} failed`, e);
+        }
+      }
+    }
+    // Defer to next tick to ensure DOM is painted
+    const t = setTimeout(renderAll, 100);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [numPages, pages.length]);
 
   if (error) {
     return (
       <div className="flex-1 bg-[#F0F0F0] flex flex-col items-center justify-center p-6 text-center">
         <p className="text-sm font-medium">Failed to load answer sheet</p>
-        <p className="text-xs text-gray-500 mt-1">{error}</p>
+        <p className="text-xs text-gray-500 mt-1 max-w-[480px] break-words">{error}</p>
         <a href={pdfUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-[#FF6B2C] mt-2 underline">
           Open PDF directly
         </a>
+        <p className="text-[11px] text-gray-400 mt-2">If this persists, try refreshing or re-uploading.</p>
       </div>
     );
   }
 
   if (numPages === 0 && loading) {
     return (
-      <div className="flex-1 bg-[#F0F0F0] flex items-center justify-center">
+      <div className="flex-1 bg-[#F0F0F0] flex flex-col items-center justify-center p-6">
         <span className="w-6 h-6 border-2 border-gray-300 border-t-[#FF6B2C] rounded-full animate-spin" />
-        <span className="text-sm text-gray-500 ml-3">Loading answer sheet...</span>
+        <span className="text-sm text-gray-500 mt-3">Loading answer sheet...</span>
+        <span className="text-xs text-gray-400 mt-1">{pages.length ? `${pages.length} pages` : ""}</span>
       </div>
     );
   }
 
+  const totalPages = numPages || pages.length || 1;
   return (
     <div ref={containerRef} className="flex-1 overflow-auto bg-[#E8E8E8] p-4 sm:p-6 flex flex-col items-center gap-6">
-      {Array.from({ length: numPages || pages.length || 1 }, (_, idx) => {
+      {Array.from({ length: totalPages }, (_, idx) => {
         const pageNumber = idx + 1;
-        // Find DocumentPage for this pageNumber
         const docPage = pages.find((p) => p.pageNumber === pageNumber);
         const pageId = docPage?.id;
         const pageHighlights = highlights.filter((h) => {
-          // Highlight pageId is UUID, map to pageNumber
           const hlPageNum = pageIdToNumber.get(h.pageId);
           return hlPageNum === pageNumber || h.pageId === pageId || h.pageId === String(pageNumber) || h.pageId === `page_${pageNumber}`;
         });
@@ -123,8 +221,7 @@ export function PdfViewer({ pdfUrl, pages, highlights, activePageId }: Props) {
             className={`relative bg-white shadow-md rounded-lg overflow-hidden shrink-0 ${isActive ? "ring-2 ring-[#FF6B2C]" : ""}`}
             style={{ width: "100%", maxWidth: 640 }}
           >
-            <canvas id={`pdf-canvas-${pageNumber}`} className="w-full h-auto block" />
-            {/* Highlight overlay */}
+            <canvas id={`pdf-canvas-${pageNumber}`} className="w-full h-auto block bg-white" />
             <div className="absolute inset-0 pointer-events-none">
               {pageHighlights.map((hr, hi) =>
                 hr.boxes.map((box, bi) => {
@@ -145,7 +242,7 @@ export function PdfViewer({ pdfUrl, pages, highlights, activePageId }: Props) {
               )}
             </div>
             <div className="absolute bottom-2 right-2 text-[10px] bg-white/80 backdrop-blur px-2 py-0.5 rounded-full border shadow-sm">
-              {pageNumber} / {numPages || "?"}
+              {pageNumber} / {numPages || totalPages}
             </div>
           </div>
         );

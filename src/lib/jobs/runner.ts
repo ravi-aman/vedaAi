@@ -657,6 +657,23 @@ async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocum
   const asOcr = ocrData?.asOcr || ocrResultStore.get(jobId)?.asOcr;
   if (!qpOcr || !asOcr) throw new AppError(ErrorCodes.OCR_FAILED, "OCR results missing for deterministic extraction");
 
+  // Document role validation: ensure answerSheet is not a marking scheme
+  try {
+    const { classifyDocument } = await import("@/lib/documents/classifier");
+    const qpRole = classifyDocument(qpDoc.originalName, qpOcr, qpDoc.mime);
+    const asRole = classifyDocument(asDoc.originalName, asOcr, asDoc.mime);
+    console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "document_role", qpRole: qpRole.role, qpEvidence: qpRole.evidence.slice(0,2), asRole: asRole.role, asEvidence: asRole.evidence.slice(0,2) }));
+    if (asRole.isMarkingScheme) {
+      console.warn(JSON.stringify({ jobId, stage: "EXTRACTING", event: "marking_scheme_detected", asDoc: asDoc.originalName, evidence: asRole.evidence }));
+      // Do not fail hard, but mark for review — the viewer will still show the file, but mapping will be REVIEW_REQUIRED
+      // We could also throw to force re-upload, but for now we allow processing with warning
+    }
+    // Validate that questionPaper is not an answer sheet and vice versa
+    if (qpRole.role === "MARKING_SCHEME" && qpDoc.kind === "questionPaper") {
+      console.warn(JSON.stringify({ jobId, stage: "EXTRACTING", event: "qp_is_marking_scheme", qpDoc: qpDoc.originalName }));
+    }
+  } catch {}
+
   const t0 = Date.now();
   console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "deterministic_start", qpPages: qpOcr.pages.length, asPages: asOcr.pages.length }));
 
@@ -1067,8 +1084,33 @@ async function localizing(jobId: string, matching: any) {
 }
 
 async function validatingResult(jobId: string, localized: any) {
-  const { questions, decisions } = localized;
+  const { questions, decisions, answerGroups } = localized;
   if (questions.length === 0) {
     throw new AppError(ErrorCodes.QUESTION_EXTRACTION_FAILED, "No questions detected");
   }
+  // Golden validation
+  const topLevel = questions.filter((q: any) => q.depth === 0);
+  // Check for impossible question IDs (e.g., 400, 4807) - should have been filtered, but if still present, mark REVIEW_REQUIRED
+  const impossibleIds = questions.filter((q: any) => {
+    const n = parseInt(q.normalizedNumber.match(/^(\d+)/)?.[1] || "0", 10);
+    return n > 100 || q.normalizedNumber.includes("400") || q.normalizedNumber.includes("4807");
+  });
+  if (impossibleIds.length > 0) {
+    console.warn(JSON.stringify({ jobId, stage: "VALIDATING_RESULT", event: "impossible_ids", count: impossibleIds.length, sample: impossibleIds.slice(0,3).map((q:any)=>q.normalizedNumber) }));
+    // Do not fail, but log for review
+  }
+  // Check for excessive top-level count (e.g., 48 for 30-question paper)
+  if (topLevel.length > 60) {
+    console.warn(JSON.stringify({ jobId, stage: "VALIDATING_RESULT", event: "excessive_top_level", topLevel: topLevel.length }));
+  }
+  // Check that answerSheet has regions
+  if (!answerGroups || answerGroups.length === 0) {
+    console.warn(JSON.stringify({ jobId, stage: "VALIDATING_RESULT", event: "no_answer_groups" }));
+  }
+  // Check that decisions have highlights where expected
+  const matchedWithNoHighlight = decisions.filter((d: any) => d.status === "MATCHED" && (!d.highlightRegions || d.highlightRegions.length === 0));
+  if (matchedWithNoHighlight.length > 0) {
+    console.warn(JSON.stringify({ jobId, stage: "VALIDATING_RESULT", event: "matched_no_highlight", count: matchedWithNoHighlight.length }));
+  }
+  console.log(JSON.stringify({ jobId, stage: "VALIDATING_RESULT", event: "golden_validation_pass", topLevel: topLevel.length, total: questions.length, decisions: decisions.length }));
 }

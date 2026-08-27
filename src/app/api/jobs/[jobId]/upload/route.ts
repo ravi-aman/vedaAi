@@ -4,7 +4,8 @@ import { validateFile } from "@/lib/files/validation";
 import { inspectPdf, inspectImage } from "@/lib/documents/pdf";
 import { getConfig } from "@/lib/config";
 import { AppError, ErrorCodes } from "@/lib/errors/codes";
-import type { DocumentKind } from "@/types";
+import type { DocumentKind, DocumentRole } from "@/types";
+import { classifyDocument } from "@/lib/documents/classifier";
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ jobId: string }> }) {
   const { jobId } = await params;
@@ -49,13 +50,29 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ job
     const fileId = generateId();
     await fileStorage.save(jobId, fileId, buffer, validation.sanitizedName);
 
+    // Classify document role (heuristic, filename + first-page text if available)
+    let detectedRole: DocumentRole = "UNKNOWN";
+    try {
+      // For now, classify based on filename only (OCR not yet available at upload time)
+      // Full OCR-based classification happens in job runner after Textract
+      const nameLower = file.name.toLowerCase();
+      if (kind === "answerSheet" && (nameLower.includes("marking") || nameLower.includes("solution") || nameLower.includes("scheme"))) {
+        detectedRole = "MARKING_SCHEME";
+      } else if (kind === "questionPaper") {
+        detectedRole = "QUESTION_PAPER";
+      } else if (kind === "answerSheet") {
+        detectedRole = "ANSWER_SHEET";
+      }
+    } catch {}
+
     // Create Document
     const docId = generateId();
     const now = new Date().toISOString();
-    const doc = {
+    const doc: any = {
       id: docId,
       jobId,
       kind,
+      detectedRole,
       originalName: file.name,
       mime: validation.mime,
       size: buffer.length,

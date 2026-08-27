@@ -59,10 +59,13 @@ export interface DocumentPage {
   artifactId?: string;
 }
 
+export type DocumentRole = "QUESTION_PAPER" | "ANSWER_SHEET" | "MARKING_SCHEME" | "SOLUTION" | "UNKNOWN";
+
 export interface Document {
   id: string;
   jobId: string;
   kind: DocumentKind;
+  detectedRole?: DocumentRole;
   originalName: string;
   mime: string;
   size: number;
