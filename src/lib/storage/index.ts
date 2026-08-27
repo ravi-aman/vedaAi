@@ -25,23 +25,77 @@ export interface ArtifactStore {
   getPageImage(jobId: string, pageId: string): Promise<Buffer | null>;
 }
 
-// In-memory JobStore
+// --- Persisted In-memory stores (survive dev restarts via tmp file) ---
+const PERSIST_DIR = path.join(os.tmpdir(), "veda-ai", "persist");
+
+async function persistWrite(file: string, data: any) {
+  try {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, JSON.stringify(data, null, 2), "utf-8");
+  } catch {}
+}
+async function persistRead<T>(file: string): Promise<T | null> {
+  try {
+    const buf = await fs.readFile(file, "utf-8");
+    return JSON.parse(buf) as T;
+  } catch { return null; }
+}
+function jobFile(jobId: string) {
+  const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+  return path.join(PERSIST_DIR, `job-${safe}.json`);
+}
+function docsFile(jobId: string) {
+  const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+  return path.join(PERSIST_DIR, `docs-${safe}.json`);
+}
+function pagesFile(jobId: string) {
+  const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+  return path.join(PERSIST_DIR, `pages-${safe}.json`);
+}
+
+// In-memory JobStore with file fallback
 export class InMemoryJobStore implements JobStore {
   private jobs = new Map<string, ProcessingJob>();
   async create(job: ProcessingJob) {
     this.jobs.set(job.id, job);
+    await persistWrite(jobFile(job.id), job);
   }
   async get(jobId: string) {
-    return this.jobs.get(jobId) || null;
+    const mem = this.jobs.get(jobId);
+    if (mem) return mem;
+    const persisted = await persistRead<ProcessingJob>(jobFile(jobId));
+    if (persisted) {
+      this.jobs.set(jobId, persisted);
+      return persisted;
+    }
+    return null;
   }
   async update(jobId: string, patch: Partial<ProcessingJob>) {
-    const existing = this.jobs.get(jobId);
-    if (!existing) throw new Error(`Job ${jobId} not found`);
+    let existing: ProcessingJob | null | undefined = this.jobs.get(jobId);
+    if (!existing) {
+      existing = await persistRead<ProcessingJob>(jobFile(jobId));
+      if (!existing) throw new Error(`Job ${jobId} not found`);
+      this.jobs.set(jobId, existing);
+    }
     const updated = { ...existing, ...patch, updatedAt: new Date().toISOString() } as ProcessingJob;
     this.jobs.set(jobId, updated);
+    await persistWrite(jobFile(jobId), updated);
     return updated;
   }
   async list() {
+    // Merge memory + persisted files
+    try {
+      const files = await fs.readdir(PERSIST_DIR).catch(() => [] as string[]);
+      for (const f of files) {
+        if (f.startsWith("job-") && f.endsWith(".json")) {
+          const jobId = f.slice(4, -5);
+          if (!this.jobs.has(jobId)) {
+            const j = await persistRead<ProcessingJob>(path.join(PERSIST_DIR, f));
+            if (j) this.jobs.set(jobId, j);
+          }
+        }
+      }
+    } catch {}
     return Array.from(this.jobs.values());
   }
 }
@@ -49,25 +103,138 @@ export class InMemoryJobStore implements JobStore {
 // Singleton store (job-scoped, no global mutable processing state except store itself which is isolated per job)
 export const jobStore = new InMemoryJobStore();
 
-// Document stores
+// Document stores with persistence
 const docStore = new Map<string, Document>();
-const pageStore = new Map<string, DocumentPage>();
 export const documentStore = {
-  async save(doc: Document) { docStore.set(doc.id, doc); },
-  async get(id: string) { return docStore.get(id) || null; },
-  async getByJob(jobId: string) { return Array.from(docStore.values()).filter(d => d.jobId === jobId); },
+  async save(doc: Document) {
+    docStore.set(doc.id, doc);
+    // persist per job
+    const existing = await persistRead<Document[]>(docsFile(doc.jobId)) || [];
+    const filtered = existing.filter((d) => d.id !== doc.id);
+    filtered.push(doc);
+    await persistWrite(docsFile(doc.jobId), filtered);
+  },
+  async get(id: string) {
+    const mem = docStore.get(id);
+    if (mem) return mem;
+    // scan persisted files for doc
+    try {
+      const files = await fs.readdir(PERSIST_DIR).catch(() => [] as string[]);
+      for (const f of files) {
+        if (f.startsWith("docs-") && f.endsWith(".json")) {
+          const docs = await persistRead<Document[]>(path.join(PERSIST_DIR, f));
+          const found = docs?.find((d) => d.id === id);
+          if (found) {
+            docStore.set(id, found);
+            return found;
+          }
+        }
+      }
+    } catch {}
+    return null;
+  },
+  async getByJob(jobId: string) {
+    const mem = Array.from(docStore.values()).filter((d) => d.jobId === jobId);
+    if (mem.length > 0) return mem;
+    const persisted = await persistRead<Document[]>(docsFile(jobId));
+    if (persisted && persisted.length > 0) {
+      persisted.forEach((d) => docStore.set(d.id, d));
+      return persisted;
+    }
+    return [];
+  },
   async update(id: string, patch: Partial<Document>) {
-    const d = docStore.get(id);
-    if (!d) throw new Error(`Doc ${id} not found`);
+    let d = docStore.get(id);
+    if (!d) {
+      const found = await (documentStore as any).get(id);
+      if (!found) throw new Error(`Doc ${id} not found`);
+      d = found;
+    }
     const upd = { ...d, ...patch } as Document;
     docStore.set(id, upd);
+    // update persisted file
+    const docs = await persistRead<Document[]>(docsFile(upd.jobId)) || [];
+    const filtered = docs.filter((x) => x.id !== id);
+    filtered.push(upd);
+    await persistWrite(docsFile(upd.jobId), filtered);
     return upd;
-  }
+  },
 };
+const pageStore = new Map<string, DocumentPage>();
 export const pageStoreApi = {
-  async save(p: DocumentPage) { pageStore.set(p.id, p); },
-  async get(id: string) { return pageStore.get(id) || null; },
-  async getByDocument(docId: string) { return Array.from(pageStore.values()).filter(p => p.documentId === docId); },
+  async save(p: DocumentPage) {
+    pageStore.set(p.id, p);
+    // find jobId via document
+    const doc = docStore.get(p.documentId);
+    let jobId = doc?.jobId;
+    if (!jobId) {
+      // try to find via persisted docs
+      try {
+        const files = await fs.readdir(PERSIST_DIR).catch(() => [] as string[]);
+        for (const f of files) {
+          if (f.startsWith("docs-")) {
+            const docs = await persistRead<Document[]>(path.join(PERSIST_DIR, f));
+            const d = docs?.find((x) => x.id === p.documentId);
+            if (d) { jobId = d.jobId; break; }
+          }
+        }
+      } catch {}
+    }
+    if (jobId) {
+      const existing = (await persistRead<DocumentPage[]>(pagesFile(jobId))) || [];
+      const filtered = existing.filter((x) => x.id !== p.id);
+      filtered.push(p);
+      await persistWrite(pagesFile(jobId), filtered);
+    }
+  },
+  async get(id: string) {
+    const mem = pageStore.get(id);
+    if (mem) return mem;
+    try {
+      const files = await fs.readdir(PERSIST_DIR).catch(() => [] as string[]);
+      for (const f of files) {
+        if (f.startsWith("pages-") && f.endsWith(".json")) {
+          const pages = await persistRead<DocumentPage[]>(path.join(PERSIST_DIR, f));
+          const found = pages?.find((x) => x.id === id);
+          if (found) {
+            pageStore.set(id, found);
+            return found;
+          }
+        }
+      }
+    } catch {}
+    return null;
+  },
+  async getByDocument(docId: string) {
+    const mem = Array.from(pageStore.values()).filter((p) => p.documentId === docId);
+    if (mem.length > 0) return mem;
+    // try persisted
+    const doc = await documentStore.get(docId);
+    const jobId = doc?.jobId;
+    if (jobId) {
+      const persisted = await persistRead<DocumentPage[]>(pagesFile(jobId));
+      if (persisted) {
+        const filtered = persisted.filter((p) => p.documentId === docId);
+        filtered.forEach((p) => pageStore.set(p.id, p));
+        if (filtered.length > 0) return filtered;
+      }
+    }
+    // fallback scan all pages files
+    try {
+      const files = await fs.readdir(PERSIST_DIR).catch(() => [] as string[]);
+      for (const f of files) {
+        if (f.startsWith("pages-")) {
+          const pages = await persistRead<DocumentPage[]>(path.join(PERSIST_DIR, f));
+          const filtered = pages?.filter((p) => p.documentId === docId) || [];
+          if (filtered.length > 0) {
+            filtered.forEach((p) => pageStore.set(p.id, p));
+            return filtered;
+          }
+        }
+      }
+    } catch {}
+    return [];
+  },
 };
 
 // File storage

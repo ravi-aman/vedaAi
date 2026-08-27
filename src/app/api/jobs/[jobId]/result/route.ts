@@ -52,25 +52,24 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
       return NextResponse.json({ error: "Access denied", code: "UNAUTHORIZED" }, { status: 403 });
     }
   } else if (job.guestSessionId) {
-    // Guest job: check grace period
+    // Guest job: owner guest can always view (no hard expiry) — grace is UI nudge only
     const isOwnerGuest = guestSessionId && job.guestSessionId === guestSessionId;
     if (!isOwnerGuest) {
+      // Not owner guest: allow if user is authenticated and this is their claimed job? But guest jobs have no userId, so deny
       return NextResponse.json({ error: "Access denied", code: "UNAUTHORIZED" }, { status: 403 });
     }
-    if (isGraceExpired(job.createdAt)) {
-      // Grace expired → require auth
-      if (!currentUserId) {
-        return NextResponse.json({ error: "Authentication required", code: "AUTH_REQUIRED", graceExpired: true }, { status: 401 });
-      }
-      // Even with guest cookie, after grace requires claim
-      return NextResponse.json({ error: "Authentication required", code: "AUTH_REQUIRED", graceExpired: true }, { status: 401 });
-    }
+    // Owner guest → allow regardless of grace period. Frontend will show save prompt after grace but not block.
   }
 
-  const result = resultStore.get(jobId);
+  let result: any = null;
+  // Try async persisted read first
+  if ((resultStore as any).getAsync) {
+    result = await (resultStore as any).getAsync(jobId);
+  }
+  if (!result) result = resultStore.get(jobId);
   if (!result) {
     // try to reconstruct minimal? In real, would fetch from artifact store / DB
-    return NextResponse.json({ error: "Result not found (in-memory expired)", code: "STORAGE_ERROR" }, { status: 404 });
+    return NextResponse.json({ error: "Result not found (session expired — please re-run mapping)", code: "STORAGE_ERROR" }, { status: 404 });
   }
 
   // Build frontend contract

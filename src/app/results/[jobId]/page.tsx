@@ -2,8 +2,10 @@
 "use client";
 import React, { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { QuestionCard } from "@/components/results/QuestionCard";
-import { ViewerShell } from "@/components/viewer/Viewer";
+import { MappingQuestionCard } from "@/components/results/MappingQuestionCard";
+import { AnswerSheetViewer } from "@/components/viewer/AnswerSheetViewer";
+import { Sidebar } from "@/components/layout/Sidebar";
+import { TopHeader } from "@/components/layout/TopHeader";
 import { AuthGate } from "@/components/auth/AuthGate";
 import type { ProcessingResult, QuestionResult } from "@/types";
 
@@ -16,34 +18,72 @@ export default function ResultsPage() {
   const [showAuthGate, setShowAuthGate] = useState(false);
   const [authGateDismissed, setAuthGateDismissed] = useState(false);
   const [jobCreatedAt, setJobCreatedAt] = useState<string | null>(null);
+  const [expandAll, setExpandAll] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
+
+  const handleSidebarToggle = () => {
+    if (typeof window !== "undefined" && window.innerWidth < 1024) {
+      setMobileOpen(true);
+    } else {
+      setSidebarCollapsed((v) => !v);
+    }
+  };
+
+  const [errorCode, setErrorCode] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
-        const res = await fetch(`/api/jobs/${params.jobId}/result`);
-        const data = await res.json();
+        const res = await fetch(`/api/jobs/${params.jobId}/result`, { credentials: "include" });
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          if (data.code === "AUTH_REQUIRED" || res.status === 401) {
-            if (!cancelled) setShowAuthGate(true);
-            throw new Error(data.error || "Authentication required");
+          const code = (data as any).code || "";
+          // Auth required → show gate, not error
+          if (code === "AUTH_REQUIRED" || code === "UNAUTHORIZED" || res.status === 401 || res.status === 403) {
+            if (!cancelled) {
+              setShowAuthGate(true);
+              setError(null);
+              setErrorCode(code || "AUTH_REQUIRED");
+            }
+            // still try to fetch jobCreatedAt for timer
+            try {
+              const jobRes = await fetch(`/api/jobs/${params.jobId}`, { credentials: "include" });
+              const jobData = await jobRes.json().catch(() => ({}));
+              if (jobRes.ok && jobData.job?.createdAt && !cancelled) setJobCreatedAt(jobData.job.createdAt);
+            } catch {}
+            return;
           }
-          throw new Error(data.error || "Failed to load result");
+          // Job/result expired or not found → friendly expired UI
+          if (code === "JOB_NOT_FOUND" || code === "STORAGE_ERROR" || res.status === 404) {
+            if (!cancelled) {
+              setErrorCode(code || "JOB_NOT_FOUND");
+              setError("__JOB_EXPIRED__");
+            }
+            return;
+          }
+          throw new Error((data as any).error || "Failed to load result");
         }
         if (!cancelled) {
           setResult(data);
           if (data.questionResults?.[0]) setSelectedId(data.questionResults[0].question.id);
         }
-        // fetch job for grace timer
         try {
-          const jobRes = await fetch(`/api/jobs/${params.jobId}`);
-          const jobData = await jobRes.json();
+          const jobRes = await fetch(`/api/jobs/${params.jobId}`, { credentials: "include" });
+          const jobData = await jobRes.json().catch(() => ({}));
           if (jobRes.ok && jobData.job?.createdAt) {
             if (!cancelled) setJobCreatedAt(jobData.job.createdAt);
           }
         } catch {}
       } catch (e: any) {
-        if (!cancelled) setError(e.message);
+        if (!cancelled) {
+          // Don't overwrite auth gate
+          if (e.message !== "Authentication required" && !showAuthGate) {
+            setError(e.message);
+            setErrorCode(null);
+          }
+        }
       }
     }
     load();
@@ -52,24 +92,19 @@ export default function ResultsPage() {
     };
   }, [params.jobId]);
 
-  // Guest grace timer — show AuthGate after 90s (configurable via env, default 90000)
   useEffect(() => {
     if (!result || !jobCreatedAt || showAuthGate) return;
-    // Check if already authenticated — skip timer and try claim
     (async () => {
       try {
         const { createClient } = await import("@/lib/supabase/client");
         const supabase = createClient();
         const { data } = await supabase.auth.getUser();
         if (data.user) {
-          // auto-claim guest result for authenticated user
           await fetch(`/api/jobs/${params.jobId}/claim`, { method: "POST" }).catch(() => {});
-          return; // authenticated, no gate
+          return;
         }
-      } catch {
-        // supabase not configured, fall through to guest timer
-      }
-      const GUEST_GRACE_MS = 90000; // should match GUEST_RESULT_GRACE_PERIOD_MS
+      } catch {}
+      const GUEST_GRACE_MS = 90000;
       const created = new Date(jobCreatedAt).getTime();
       const elapsed = Date.now() - created;
       const remaining = GUEST_GRACE_MS - elapsed;
@@ -82,7 +117,6 @@ export default function ResultsPage() {
     })();
   }, [result, jobCreatedAt, showAuthGate, params.jobId]);
 
-  // Auto-claim when user signs in while viewing result — stop once claimed/authenticated
   useEffect(() => {
     if (!result || showAuthGate === false) return;
     let cancelled = false;
@@ -113,26 +147,20 @@ export default function ResultsPage() {
     };
   }, [result, params.jobId, showAuthGate]);
 
-  // Real pages and PDF URL from job documents
   const [pages, setPages] = useState<any[]>([]);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [pdfMime, setPdfMime] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`/api/jobs/${params.jobId}`)
+    fetch(`/api/jobs/${params.jobId}`, { credentials: "include" })
       .then((r) => r.json())
       .then((data) => {
         if (data.pages && data.pages.length > 0) {
-          // Filter to answer sheet pages
           const answerDocIds = (data.documents || []).filter((d: any) => d.kind === "answerSheet").map((d: any) => d.id);
           const answerPages = data.pages.filter((p: any) => answerDocIds.includes(p.documentId));
-          if (answerPages.length > 0) {
-            setPages(answerPages);
-          } else {
-            setPages(data.pages);
-          }
+          if (answerPages.length > 0) setPages(answerPages);
+          else setPages(data.pages);
         }
-        // Build PDF URL from answerSheetFileId
         const job = data.job;
         if (job?.answerSheetFileId) {
           const doc = (data.documents || []).find((d: any) => d.kind === "answerSheet");
@@ -145,8 +173,6 @@ export default function ResultsPage() {
       .catch(() => {});
   }, [params.jobId]);
 
-  // Fallback: if pages still empty, derive from result
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (result && pages.length === 0) {
       const pageMap = new Map<string, any>();
@@ -155,30 +181,66 @@ export default function ResultsPage() {
           if (!pageMap.has(reg.pageId)) pageMap.set(reg.pageId, { id: reg.pageId, pageNumber: pageMap.size + 1, width: 800, height: 1100, rotation: 0, documentId: reg.documentId });
         }
       }
-      if (pageMap.size === 0) {
-        setPages([{ id: "p1", pageNumber: 1, width: 800, height: 1100, rotation: 0 }]);
-      } else {
-        setPages(Array.from(pageMap.values()));
-      }
+      if (pageMap.size === 0) setPages([{ id: "p1", pageNumber: 1, width: 800, height: 1100, rotation: 0 }]);
+      else setPages(Array.from(pageMap.values()));
     }
   }, [result, pages.length]);
 
   if (error) {
-    return (
-      <div className="min-h-screen bg-[#F7F7F7] flex items-center justify-center p-6">
-        <div className="bg-white rounded-2xl border p-6 max-w-md text-center">
-          <p className="font-medium">Failed to load result</p>
-          <p className="text-sm text-gray-500 mt-2">{error}</p>
+    const isExpired = error === "__JOB_EXPIRED__" || errorCode === "JOB_NOT_FOUND" || errorCode === "STORAGE_ERROR";
+    if (isExpired) {
+      return (
+        <div className="h-[100dvh] h-screen flex items-center justify-center p-6 bg-[#EDEEF0] overflow-hidden">
+          <div className="bg-white rounded-[24px] border border-black/5 p-8 max-w-md text-center card-shell">
+            <div className="w-12 h-12 rounded-full bg-[#FFF1EA] flex items-center justify-center mx-auto text-[#FF5A36]">↻</div>
+            <p className="font-semibold text-[16px] mt-3">Session expired</p>
+            <p className="text-sm text-gray-500 mt-2">This result link has expired or the server was restarted. Job data is stored temporarily. Please start a new assessment.</p>
+            <button onClick={() => (window.location.href = "/")} className="mt-4 h-10 px-6 rounded-full bg-[#0A0A0A] text-white text-sm font-medium hover:bg-black transition-colors">Start new assessment</button>
+          </div>
         </div>
-      </div>
-    );
+      );
+    }
+    // Don't show error card if auth gate should be shown
+    if (showAuthGate || errorCode === "AUTH_REQUIRED" || errorCode === "UNAUTHORIZED") {
+      // fall through to auth gate render below
+    } else {
+      return (
+        <div className="min-h-screen flex items-center justify-center p-6 bg-[#EDEEF0]">
+          <div className="bg-white rounded-[24px] border border-black/5 p-6 max-w-md text-center card-shell">
+            <p className="font-medium">Failed to load result</p>
+            <p className="text-sm text-gray-500 mt-2">{error}</p>
+            <button onClick={() => window.location.reload()} className="mt-3 text-sm text-[#FF5A36] underline">Try again</button>
+          </div>
+        </div>
+      );
+    }
   }
 
   if (!result) {
+    // If auth is required, show shell with gate instead of bare spinner
+    if (showAuthGate) {
+      return (
+        <div className="h-[100dvh] h-screen bg-[#EDEEF0] flex flex-col p-0 md:p-4 gap-0 md:gap-4 overflow-hidden">
+          <div className="flex flex-1 min-h-0 gap-0 md:gap-4 overflow-hidden">
+            <Sidebar collapsed={sidebarCollapsed} onToggle={handleSidebarToggle} mobileOpen={mobileOpen} onMobileClose={() => setMobileOpen(false)} />
+            <div className="flex flex-1 flex-col min-w-0 gap-0 md:gap-4 min-h-0 overflow-hidden">
+              <TopHeader onMenuClick={() => setMobileOpen(true)} mobileDrawerOpen={mobileOpen} />
+              <div className="flex-1 flex items-center justify-center card-shell md:rounded-[20px] bg-white m-0 md:m-0 p-8 min-h-0">
+                <div className="text-center max-w-sm">
+                  <p className="font-semibold">Authentication required</p>
+                  <p className="text-sm text-gray-500 mt-1">Please sign in to view this assessment.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+          <AuthGate jobId={params.jobId} onClose={() => setAuthGateDismissed(true)} />
+        </div>
+      );
+    }
     return (
-      <div className="min-h-screen bg-[#F7F7F7] flex items-center justify-center">
+      <div className="h-[100dvh] h-screen flex items-center justify-center bg-[#EDEEF0] overflow-hidden">
         <div className="flex items-center gap-3 text-sm text-gray-600">
-          <span className="w-5 h-5 border-2 border-gray-300 border-t-[#FF6B2C] rounded-full animate-spin" />
+          <span className="w-5 h-5 border-2 border-gray-300 border-t-[#FF5A36] rounded-full animate-spin" />
           Loading results…
         </div>
       </div>
@@ -188,96 +250,82 @@ export default function ResultsPage() {
   const selected = result.questionResults.find((q) => q.question.id === selectedId) || result.questionResults[0];
   const highlights = selected?.highlightRegions || [];
   const activePageId = highlights[0]?.pageId;
-
-  const unmatched = result.unmatchedAnswers;
-  // Hierarchy: top-level = depth 0
-  const topLevel = result.questionResults.filter((qr) => qr.question.depth === 0 || !qr.question.parentQuestionId);
-  const childrenByParent = new Map<string, typeof result.questionResults>();
-  for (const qr of result.questionResults) {
-    if (qr.question.parentQuestionId) {
-      const arr = childrenByParent.get(qr.question.parentQuestionId) || [];
-      arr.push(qr);
-      childrenByParent.set(qr.question.parentQuestionId, arr);
-    }
-  }
-  const topLevelCount = topLevel.length;
-
-  const handleClaimAndReload = async () => {
-    try {
-      await fetch(`/api/jobs/${params.jobId}/claim`, { method: "POST" });
-    } catch {}
-    window.location.reload();
-  };
+  const sortedResults = [...result.questionResults].sort((a, b) => a.question.orderIndex - b.question.orderIndex);
+  const handleExpandAll = () => setExpandAll((v) => !v);
 
   return (
-    <div className="min-h-screen bg-[#F7F7F7] flex flex-col">
-      {showAuthGate && !authGateDismissed && (
-        <AuthGate
-          jobId={params.jobId}
-          onClose={() => setAuthGateDismissed(true)}
-        />
-      )}
-      <header className="h-[56px] bg-white border-b border-gray-200 flex items-center px-4 sm:px-6 justify-between shrink-0">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-[#FF6B2C] flex items-center justify-center text-white font-bold text-[13px]">V</div>
-          <span className="font-semibold">VedaAI</span>
-          <span className="hidden sm:inline text-gray-300 mx-2">/</span>
-          <span className="hidden sm:inline text-sm text-gray-600">Results</span>
-        </div>
-        <div className="text-xs text-gray-500 hidden sm:block">{topLevelCount} questions • {result.answers.length} answers {result.questions.length !== topLevelCount ? `(${result.questions.length} total incl. subparts)` : ""}</div>
-      </header>
+    <div className="min-h-screen bg-[#EDEEF0] flex flex-col p-0 md:p-4 gap-0 md:gap-4">
+      {showAuthGate && !authGateDismissed && <AuthGate jobId={params.jobId} onClose={() => setAuthGateDismissed(true)} />}
 
-      {/* Mobile tab */}
-      <div className="lg:hidden bg-white border-b flex">
-        <button onClick={() => setMobileTab("questions")} className={`flex-1 py-3 text-sm font-medium border-b-2 ${mobileTab === "questions" ? "border-[#FF6B2C] text-[#FF6B2C]" : "border-transparent text-gray-500"}`}>Questions ({topLevelCount})</button>
-        <button onClick={() => setMobileTab("viewer")} className={`flex-1 py-3 text-sm font-medium border-b-2 ${mobileTab === "viewer" ? "border-[#FF6B2C] text-[#FF6B2C]" : "border-transparent text-gray-500"}`}>Answer Sheet</button>
-      </div>
+      <div className="flex flex-1 min-h-0 gap-0 md:gap-4">
+        <Sidebar collapsed={sidebarCollapsed} onToggle={handleSidebarToggle} mobileOpen={mobileOpen} onMobileClose={() => setMobileOpen(false)} />
 
-      <div className="flex flex-1 min-h-0">
-        {/* Question panel */}
-        <div
-          className={`w-full lg:w-[380px] bg-white border-r border-gray-200 flex flex-col shrink-0 ${mobileTab === "viewer" ? "hidden lg:flex" : "flex"}`}
-        >
-          <div className="p-4 border-b border-gray-100">
-            <h2 className="font-semibold text-sm">Questions</h2>
-            <p className="text-xs text-gray-500">{topLevelCount} top-level • {result.questions.length} total incl. subparts</p>
-          </div>
-          <div className="flex-1 overflow-auto p-3 space-y-2">
-            {topLevel.map((qr) => {
-              const children = childrenByParent.get(qr.question.id) || [];
-              return (
-                <div key={qr.question.id} className="space-y-2">
-                  <QuestionCard result={qr} isSelected={selectedId === qr.question.id} onSelect={() => setSelectedId(qr.question.id)} />
-                  {children.length > 0 && (
-                    <div className="ml-4 pl-3 border-l-2 border-gray-100 space-y-2">
-                      {children.map((child) => (
-                        <QuestionCard key={child.question.id} result={child} isSelected={selectedId === child.question.id} onSelect={() => setSelectedId(child.question.id)} />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-            {/* Render any orphan subparts that have no parent found (should not happen) */}
-            {result.questionResults.filter((qr) => qr.question.depth !== 0 && !qr.question.parentQuestionId && !topLevel.includes(qr) && !Array.from(childrenByParent.values()).flat().includes(qr)).map((qr) => (
-              <QuestionCard key={qr.question.id} result={qr} isSelected={selectedId === qr.question.id} onSelect={() => setSelectedId(qr.question.id)} />
-            ))}
-          </div>
-          {unmatched.length > 0 && (
-            <div className="p-3 border-t bg-amber-50">
-              <p className="text-xs font-medium text-amber-800">Unmatched answers ({unmatched.length})</p>
-              <p className="text-xs text-amber-700 mt-1">These could not be reliably mapped — needs review.</p>
+        <div className="flex flex-1 flex-col min-w-0 gap-0 md:gap-4 min-h-0">
+          <TopHeader onMenuClick={() => setMobileOpen(true)} mobileDrawerOpen={mobileOpen} />
+
+          {/* Mobile segmented control */}
+          <div className="md:hidden px-3 py-2 bg-white border-b border-[#ECECEE]">
+            <div className="flex bg-[#F2F3F5] rounded-full p-1 gap-1">
+              <button
+                onClick={() => setMobileTab("questions")}
+                className={`flex-1 py-2 text-[13px] font-medium rounded-full transition-all duration-150 ${mobileTab === "questions" ? "bg-white shadow-sm text-[#0A0A0A]" : "text-[#8A8A8E]"}`}
+              >
+                Questions
+              </button>
+              <button
+                onClick={() => setMobileTab("viewer")}
+                className={`flex-1 py-2 text-[13px] font-medium rounded-full transition-all duration-150 ${mobileTab === "viewer" ? "bg-white shadow-sm text-[#0A0A0A]" : "text-[#8A8A8E]"}`}
+              >
+                Answer Sheet
+              </button>
             </div>
-          )}
-        </div>
-
-        {/* Viewer panel */}
-        <div className={`flex-1 flex flex-col min-w-0 bg-[#E8E8E8] ${mobileTab === "questions" ? "hidden lg:flex" : "flex"}`}>
-          <div className="h-[44px] bg-white border-b flex items-center px-4 justify-between shrink-0">
-            <span className="text-sm font-medium">Answer Sheet</span>
-            <span className="text-xs text-gray-500">{selected ? `Q ${selected.question.normalizedNumber} selected` : ""}</span>
           </div>
-          <ViewerShell pages={pages} highlights={highlights} activePageId={activePageId} selectedQuestionId={selectedId || undefined} pdfUrl={pdfUrl || undefined} mime={pdfMime || undefined} />
+
+          {/* Two independent rounded cards with 16px gap inside light-gray content area */}
+          <div className="flex flex-1 min-h-0 gap-4 bg-transparent overflow-hidden">
+            {/* Left panel — Extracted Questions: white bg, 20px radius, padding 16px */}
+            <div className={`flex flex-col shrink-0 bg-white rounded-[20px] card-shell overflow-hidden w-full md:w-[420px] xl:w-[460px] ${mobileTab === "viewer" ? "hidden md:flex" : "flex"}`}>
+              <div className="flex items-center justify-between px-4 pt-4 pb-3 shrink-0">
+                <h2 className="text-[14px] font-bold text-[#0A0A0A]">Extracted Questions (from question paper)</h2>
+                <button onClick={handleExpandAll} className="text-[12px] font-medium text-[#FF5A36] hover:underline">
+                  {expandAll ? "Collapse All" : "Expand All"}
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-auto px-4 pb-4 space-y-3">
+                {sortedResults.map((qr) => (
+                  <MappingQuestionCard
+                    key={qr.question.id}
+                    result={qr}
+                    isSelected={selectedId === qr.question.id}
+                    onSelect={() => {
+                      setSelectedId(qr.question.id);
+                    }}
+                    defaultExpanded={qr.question.id === selectedId}
+                    forceExpanded={expandAll}
+                  />
+                ))}
+                {result.unmatchedAnswers.length > 0 && (
+                  <div className="p-3 rounded-[12px] bg-amber-50 border border-amber-200">
+                    <p className="text-xs font-medium text-amber-800">Unmatched answers ({result.unmatchedAnswers.length})</p>
+                    <p className="text-xs text-amber-700 mt-1">These could not be reliably mapped — needs review.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Right panel — Answer Sheet: 20px radius, dark header bar, scrollable image with green highlight */}
+            <div className={`flex-1 flex flex-col min-w-0 bg-white rounded-[20px] card-shell overflow-hidden ${mobileTab === "questions" ? "hidden md:flex" : "flex"}`}>
+              <AnswerSheetViewer
+                pages={pages}
+                highlights={highlights}
+                activePageId={activePageId}
+                selectedQuestionId={selectedId || undefined}
+                pdfUrl={pdfUrl || undefined}
+                mime={pdfMime || undefined}
+              />
+            </div>
+          </div>
         </div>
       </div>
     </div>

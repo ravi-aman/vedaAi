@@ -257,11 +257,72 @@ async function preprocess(jobId: string) {
   return { ok: true };
 }
 
-// In-memory OCR + Vision + Fusion result stores (jobId -> per-document results)
+// In-memory OCR + Vision + Fusion result stores (jobId -> per-document results) — with disk fallback for refresh persistence
+const RESULT_PERSIST_DIR = path.join(os.tmpdir(), "veda-ai", "persist");
+async function resultPersistWrite(jobId: string, data: any) {
+  try {
+    await fs.mkdir(RESULT_PERSIST_DIR, { recursive: true });
+    const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+    await fs.writeFile(path.join(RESULT_PERSIST_DIR, `result-${safe}.json`), JSON.stringify(data, null, 2), "utf-8");
+  } catch {}
+}
+async function resultPersistRead(jobId: string): Promise<any | null> {
+  try {
+    const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+    const buf = await fs.readFile(path.join(RESULT_PERSIST_DIR, `result-${safe}.json`), "utf-8");
+    return JSON.parse(buf);
+  } catch { return null; }
+}
 export const ocrResultStore = new Map<string, { qpOcr?: OcrDocumentResult; asOcr?: OcrDocumentResult }>();
 export const visionResultStore = new Map<string, { qpVision?: VisionDocumentAnalysis; asVision?: VisionDocumentAnalysis }>();
 export const fusionResultStore = new Map<string, any>();
-export const resultStore = new Map<string, any>();
+class PersistedResultStore {
+  private map = new Map<string, any>();
+  set(jobId: string, v: any) {
+    this.map.set(jobId, v);
+    try {
+      const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+      const p = path.join(RESULT_PERSIST_DIR, `result-${safe}.json`);
+      const { mkdirSync, writeFileSync } = require("fs");
+      const { dirname } = require("path");
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, JSON.stringify(v, null, 2), "utf-8");
+    } catch {}
+    // also async fallback
+    resultPersistWrite(jobId, v);
+  }
+  get(jobId: string) {
+    const mem = this.map.get(jobId);
+    if (mem) return mem;
+    // sync read from disk (blocking) — use deasync-like sync read via fs sync? fallback to async via cache population
+    // For sync get, we try to read synchronously if available
+    try {
+      const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+      const p = path.join(RESULT_PERSIST_DIR, `result-${safe}.json`);
+      // sync read if exists
+      const { readFileSync, existsSync } = require("fs");
+      if (existsSync(p)) {
+        const buf = readFileSync(p, "utf-8");
+        const data = JSON.parse(buf);
+        this.map.set(jobId, data);
+        return data;
+      }
+    } catch {}
+    return undefined;
+  }
+  // async fallback used by API routes
+  async getAsync(jobId: string) {
+    const mem = this.map.get(jobId);
+    if (mem) return mem;
+    const persisted = await resultPersistRead(jobId);
+    if (persisted) {
+      this.map.set(jobId, persisted);
+      return persisted;
+    }
+    return undefined;
+  }
+}
+export const resultStore: any = new PersistedResultStore();
 
 async function ocrStage(jobId: string): Promise<{ qpOcr?: OcrDocumentResult; asOcr?: OcrDocumentResult }> {
   const cfg = getConfig() as any;
