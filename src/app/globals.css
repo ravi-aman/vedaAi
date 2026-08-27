@@ -88,27 +88,33 @@ body {
   }
 }
 
-/* Tooltip for collapsed sidebar icons */
+/* Tooltip for collapsed sidebar icons — fast, smooth, no clipping */
 .sidebar-tooltip {
   position: absolute;
-  left: calc(100% + 8px);
+  left: calc(100% + 12px);
   top: 50%;
-  transform: translateY(-50%);
+  transform: translateY(-50%) translateX(-4px);
   background: #0a0a0a;
   color: #fff;
   font-size: 12px;
   font-weight: 500;
-  padding: 6px 8px;
+  padding: 6px 10px;
   border-radius: 8px;
   white-space: nowrap;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 150ms ease;
-  transition-delay: 300ms;
-  z-index: 50;
+  visibility: hidden;
+  transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+  transition-delay: 80ms;
+  z-index: 9999;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  will-change: opacity, transform;
 }
 .group:hover .sidebar-tooltip {
   opacity: 1;
+  visibility: visible;
+  transform: translateY(-50%) translateX(0);
+  transition-delay: 80ms;
 }
 
 /* Dropdown animation */

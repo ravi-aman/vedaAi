@@ -4,22 +4,10 @@ import { useRouter } from "next/navigation";
 
 /* Icons — 20px, stroke 1.8, minimal */
 function IconGrid(props: { className?: string }) {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={props.className}>
-      <rect x="3" y="3" width="7" height="7" rx="1.5" />
-      <rect x="14" y="3" width="7" height="7" rx="1.5" />
-      <rect x="3" y="14" width="7" height="7" rx="1.5" />
-      <rect x="14" y="14" width="7" height="7" rx="1.5" />
-    </svg>
-  );
+  return <img src="/home_logo.png" alt="" className={`w-5 h-5 object-contain shrink-0 ${props.className || ""}`} />;
 }
 function IconMonitor(props: { className?: string }) {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={props.className}>
-      <rect x="2" y="4" width="20" height="14" rx="2" />
-      <path d="M8 20h8M12 14v6" />
-    </svg>
-  );
+  return <img src="/classroom_logo.png" alt="" className={`w-5 h-5 object-contain shrink-0 ${props.className || ""}`} />;
 }
 function IconDoc(props: { className?: string }) {
   return (
@@ -41,12 +29,7 @@ function IconClipboard(props: { className?: string }) {
   );
 }
 function IconClock(props: { className?: string }) {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={props.className}>
-      <circle cx="12" cy="12" r="10" />
-      <polyline points="12 6 12 12 16 14" />
-    </svg>
-  );
+  return <img src="/library_logo.png" alt="" className={`w-5 h-5 object-contain shrink-0 ${props.className || ""}`} />;
 }
 function IconGear(props: { className?: string }) {
   return (
@@ -122,26 +105,22 @@ export function Sidebar({
     <>
       {/* Desktop + Tablet persistent rail/collapsed/expanded — hidden on mobile (<768), fixed max-height of screen */}
       <aside
-        className="hidden md:flex flex-col shrink-0 card-shell sidebar-anim overflow-hidden sticky top-3 self-start h-[calc(100vh-24px)] h-[calc(100dvh-24px)] max-h-[calc(100vh-24px)] max-h-[calc(100dvh-24px)]"
+        className={`hidden md:flex flex-col shrink-0 card-shell sidebar-anim sticky top-3 self-start h-[calc(100vh-24px)] h-[calc(100dvh-24px)] max-h-[calc(100vh-24px)] max-h-[calc(100dvh-24px)] ${collapsed ? "overflow-visible" : "overflow-hidden"}`}
         style={{
           width: collapsed ? "76px" : "264px",
           borderRadius: "24px",
         }}
         aria-label="Sidebar"
       >
-        {/* Logo row — collapsed: V logo centered only; expanded: logo + wordmark + toggle */}
+        {/* Logo row — collapsed: logo centered only; expanded: logo + wordmark + toggle */}
         {collapsed ? (
           <div className="flex items-center justify-center h-[56px] shrink-0 px-[12px]">
-            <div className="w-8 h-8 rounded-[10px] bg-[#0A0A0A] flex items-center justify-center text-white font-extrabold text-[14px] shrink-0">
-              V
-            </div>
+            <img src="/logo.png" alt="VedaAI" className="w-8 h-8 rounded-[10px] object-contain shrink-0" />
           </div>
         ) : (
           <div className="flex items-center h-[56px] shrink-0 px-[20px] justify-between">
             <div className="flex items-center gap-3 min-w-0">
-              <div className="w-8 h-8 rounded-[10px] bg-[#0A0A0A] flex items-center justify-center text-white font-extrabold text-[14px] shrink-0">
-                V
-              </div>
+              <img src="/logo.png" alt="VedaAI" className="w-8 h-8 rounded-[10px] object-contain shrink-0" />
               <span
                 className="font-semibold text-[18px] tracking-tight text-[#0A0A0A] whitespace-nowrap overflow-hidden sidebar-label-expand"
                 style={{
@@ -169,11 +148,9 @@ export function Sidebar({
             <button
               aria-label="AI Teacher's Toolkit"
               onClick={() => router.push("/")}
-              className="w-10 h-10 rounded-full bg-[#0A0A0A] border-[2px] border-[#FF5A36] flex items-center justify-center text-white hover:bg-black transition-colors shrink-0"
+              className="w-10 h-10 rounded-full bg-[#0A0A0A] border-[2px] border-[#C0350A] flex items-center justify-center hover:bg-black transition-colors shrink-0 overflow-hidden p-1"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M12 5v14M5 12h14" />
-              </svg>
+              <img src="/star.png" alt="" className="w-5 h-5 object-contain" />
             </button>
           </div>
         ) : (
@@ -183,7 +160,7 @@ export function Sidebar({
               className="w-full h-[44px] rounded-full bg-[#0A0A0A] text-white text-[14px] font-medium flex items-center justify-center gap-2 hover:bg-black transition-colors active:scale-[0.97] duration-100 border border-[#FF5A36]/90"
               style={{ marginBottom: 24, boxShadow: "0 0 0 1px rgba(255,90,54,0.18)" }}
             >
-              <span className="text-[12px]">✦</span> AI Teacher&apos;s Toolkit
+              <img src="/star.png" alt="" className="w-4 h-4 object-contain" /> AI Teacher&apos;s Toolkit
             </button>
           </div>
         )}
@@ -238,10 +215,8 @@ export function Sidebar({
         {/* Bottom — Settings + School card or collapsed chevron */}
         {!collapsed ? (
           <div className="px-[20px] pb-[20px] flex flex-col gap-3">
-            <a href="#" className="flex items-center gap-[12px] h-[44px] px-[12px] rounded-[12px] text-[14px] font-medium text-[#3C3C43] hover:bg-[#F7F7F8] transition-colors">
-              <span className="w-[20px] h-[20px] flex items-center justify-center shrink-0 text-[#8A8A8E]">
-                <IconGear />
-              </span>
+            <a href="#" className="flex items-center gap-[12px] h-[44px] px-[12px] rounded-[12px] text-[14px] font-medium text-[#6B6B70] hover:bg-[#F7F7F8] transition-colors">
+              <img src="/setting.png" alt="" className="w-5 h-5 object-contain shrink-0 opacity-80" />
               <span
                 style={{
                   opacity: collapsed ? 0 : 1,
@@ -252,14 +227,8 @@ export function Sidebar({
                 Settings
               </span>
             </a>
-            <div className="bg-white border border-[#ECECEE] rounded-[16px] p-[12px] flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-white border border-[#ECECEE] flex items-center justify-center shrink-0 overflow-hidden">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-                  <circle cx="12" cy="12" r="10" fill="#3FAE55" />
-                  <path d="M7 14l5-6 5 6" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                  <path d="M9 14v3h6v-3" stroke="white" strokeWidth="1.2" />
-                </svg>
-              </div>
+            <div className="bg-[#F2F3F5] rounded-[16px] p-[12px] flex items-center gap-3">
+              <img src="/school.png" alt="" className="w-9 h-9 rounded-[10px] object-contain shrink-0 bg-white p-1" />
               <div className="min-w-0">
                 <p className="text-[13px] font-semibold text-[#0A0A0A] leading-tight whitespace-nowrap">Delhi Public School</p>
                 <p className="text-[12px] text-[#8A8A8E] leading-tight">Bokaro Steel City</p>
@@ -269,17 +238,12 @@ export function Sidebar({
         ) : (
           <div className="flex flex-col items-center gap-2 pb-[20px] px-[12px]">
             <div className="relative group">
-              <button aria-label="Settings" className="w-11 h-11 rounded-[12px] flex items-center justify-center text-[#8A8A8E] hover:bg-[#F7F7F8] hover:text-[#0A0A0A]">
-                <IconGear />
+              <button aria-label="Settings" className="w-11 h-11 rounded-[12px] flex items-center justify-center hover:bg-[#F7F7F8]">
+                <img src="/setting.png" alt="" className="w-5 h-5 object-contain opacity-70" />
               </button>
               <div className="sidebar-tooltip">Settings</div>
             </div>
-            <div className="w-8 h-8 rounded-full bg-white border border-[#ECECEE] flex items-center justify-center">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-                <circle cx="12" cy="12" r="10" fill="#3FAE55" />
-                <path d="M7 14l5-6 5 6" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
-              </svg>
-            </div>
+            <img src="/school.png" alt="" className="w-8 h-8 rounded-full object-contain bg-white p-0.5 shrink-0" />
             {/* expand chevron at very bottom — 120ms hover/press scale */}
             <button
               onClick={onToggle}
@@ -300,13 +264,13 @@ export function Sidebar({
             {/* same expanded content inside overlay */}
             <div className="flex items-center justify-between px-[20px] h-[56px] shrink-0">
               <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-[10px] bg-[#0A0A0A] flex items-center justify-center text-white font-extrabold text-[14px]">V</div>
+                <img src="/logo.png" alt="VedaAI" className="w-8 h-8 rounded-[10px] object-contain shrink-0" />
                 <span className="font-semibold text-[18px] tracking-tight text-[#0A0A0A]">VedaAI</span>
               </div>
               <button onClick={onMobileClose} className="w-8 h-8 rounded-[8px] flex items-center justify-center hover:bg-[#F5F5F6]">✕</button>
             </div>
             <div className="px-[20px]">
-              <button onClick={() => { onMobileClose?.(); router.push("/"); }} className="w-full h-[44px] rounded-full bg-[#0A0A0A] text-white text-[14px] font-medium flex items-center justify-center gap-2"> <span>+</span> AI Teacher&apos;s Toolkit</button>
+              <button onClick={() => { onMobileClose?.(); router.push("/"); }} className="w-full h-[44px] rounded-full bg-[#0A0A0A] text-white text-[14px] font-medium flex items-center justify-center gap-2"><img src="/star.png" alt="" className="w-4 h-4 object-contain" /> AI Teacher&apos;s Toolkit</button>
             </div>
             <nav className="flex flex-col gap-[4px] px-[20px] mt-6">
               {NAV.map((item) => {
@@ -321,8 +285,8 @@ export function Sidebar({
             </nav>
             <div className="flex-1" />
             <div className="px-[20px] pb-[20px] flex flex-col gap-3">
-              <div className="bg-white border border-[#ECECEE] rounded-[16px] p-[12px] flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full border border-[#ECECEE] flex items-center justify-center overflow-hidden"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="#3FAE55" /></svg></div>
+              <div className="bg-[#F2F3F5] rounded-[16px] p-[12px] flex items-center gap-3">
+                <img src="/school.png" alt="" className="w-9 h-9 rounded-[10px] object-contain shrink-0 bg-white p-1" />
                 <div><p className="text-[13px] font-semibold text-[#0A0A0A]">Delhi Public School</p><p className="text-[12px] text-[#8A8A8E]">Bokaro Steel City</p></div>
               </div>
               {/* Profile inside drawer for tablet */}
@@ -349,13 +313,13 @@ export function Sidebar({
             <aside className="relative bg-white flex flex-col shrink-0 h-full overflow-hidden card-shell drawer-enter" style={{ width: "min(80vw, 300px)", borderRadius: "0 24px 24px 0", borderLeft: "none" }}>
               <div className="flex items-center justify-between px-[20px] h-[56px] shrink-0 border-b border-[#ECECEE]">
                 <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-[10px] bg-[#0A0A0A] flex items-center justify-center text-white font-extrabold text-[14px]">V</div>
+                  <img src="/logo.png" alt="VedaAI" className="w-8 h-8 rounded-[10px] object-contain shrink-0" />
                   <span className="font-semibold text-[18px] tracking-tight text-[#0A0A0A]">VedaAI</span>
                 </div>
                 <button onClick={onMobileClose} aria-label="Close" className="w-8 h-8 rounded-[8px] flex items-center justify-center hover:bg-[#F5F5F6] text-[#0A0A0A]">✕</button>
               </div>
               <div className="px-[20px] pt-4">
-                <button onClick={() => { onMobileClose?.(); router.push("/"); }} className="w-full h-[44px] rounded-full bg-[#0A0A0A] text-white text-[14px] font-medium flex items-center justify-center gap-2"><span>+</span> AI Teacher&apos;s Toolkit</button>
+                <button onClick={() => { onMobileClose?.(); router.push("/"); }} className="w-full h-[44px] rounded-full bg-[#0A0A0A] text-white text-[14px] font-medium flex items-center justify-center gap-2"><img src="/star.png" alt="" className="w-4 h-4 object-contain" /> AI Teacher&apos;s Toolkit</button>
               </div>
               <nav className="flex flex-col gap-[4px] px-[20px] mt-6">
                 {NAV.map((item) => {
@@ -367,12 +331,12 @@ export function Sidebar({
                     </a>
                   );
                 })}
-                <a href="#" className="flex items-center gap-[12px] h-[44px] px-[12px] rounded-[12px] text-[14px] font-medium text-[#3C3C43] hover:bg-[#F7F7F8]"><IconGear /> Settings</a>
+                <a href="#" className="flex items-center gap-[12px] h-[44px] px-[12px] rounded-[12px] text-[14px] font-medium text-[#3C3C43] hover:bg-[#F7F7F8]"><img src="/setting.png" alt="" className="w-5 h-5 object-contain opacity-70" /> Settings</a>
               </nav>
               <div className="flex-1" />
               <div className="px-[20px] pb-[20px] flex flex-col gap-3">
-                <div className="bg-white border border-[#ECECEE] rounded-[16px] p-[12px] flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full border border-[#ECECEE] flex items-center justify-center overflow-hidden"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="#3FAE55" /><path d="M7 14l5-6 5 6" stroke="white" strokeWidth="1.5" strokeLinecap="round" /></svg></div>
+                <div className="bg-[#F2F3F5] rounded-[16px] p-[12px] flex items-center gap-3">
+                  <img src="/school.png" alt="" className="w-9 h-9 rounded-[10px] object-contain shrink-0 bg-white p-1" />
                   <div><p className="text-[13px] font-semibold text-[#0A0A0A]">Delhi Public School</p><p className="text-[12px] text-[#8A8A8E]">Bokaro Steel City</p></div>
                 </div>
                 <div className="pt-2 border-t border-[#ECECEE]">

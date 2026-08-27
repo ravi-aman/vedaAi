@@ -130,7 +130,7 @@ export function UploadAvatar() {
       <div className="absolute inset-0 rounded-full bg-[#FDE3D8]/70" />
       <div className="absolute inset-[7px] rounded-full bg-white shadow-sm overflow-hidden border border-white">
         <img
-          src="/image.png"
+          src="/lady.png"
           alt=""
           className="w-full h-full object-cover"
         />

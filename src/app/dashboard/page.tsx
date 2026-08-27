@@ -34,7 +34,7 @@ export default function Dashboard() {
     <div className="min-h-screen bg-[#F7F7F7]">
       <header className="h-[56px] bg-white border-b flex items-center px-6 justify-between">
         <Link href="/" className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-[#FF6B2C] flex items-center justify-center text-white font-bold text-xs">V</div>
+          <img src="/logo.png" alt="VedaAI" className="w-8 h-8 rounded-lg object-contain shrink-0" />
           <span className="font-semibold">VedaAI</span>
           <span className="text-gray-300 mx-2">/</span>
           <span className="text-sm text-gray-600">My Assessments</span>

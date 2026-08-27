@@ -40,13 +40,16 @@ export function TopHeader({
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const profileRef = useRef<HTMLButtonElement>(null);
+  const mobileProfileRef = useRef<HTMLButtonElement>(null);
+  const mobileDropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!dropdownOpen) return;
     const onClickOutside = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node) && profileRef.current && !profileRef.current.contains(e.target as Node)) {
-        setDropdownOpen(false);
-      }
+      const t = e.target as Node;
+      const insideDesktop = (dropdownRef.current && dropdownRef.current.contains(t)) || (profileRef.current && profileRef.current.contains(t));
+      const insideMobile = (mobileDropdownRef.current && mobileDropdownRef.current.contains(t)) || (mobileProfileRef.current && mobileProfileRef.current.contains(t));
+      if (!insideDesktop && !insideMobile) setDropdownOpen(false);
     };
     const onEsc = (e: KeyboardEvent) => { if (e.key === "Escape") setDropdownOpen(false); };
     document.addEventListener("mousedown", onClickOutside);
@@ -74,8 +77,8 @@ export function TopHeader({
 
   return (
     <>
-      {/* Desktop floating pill — hidden on mobile */}
-      <header className="hidden md:flex h-[56px] card-shell items-center justify-between shrink-0 px-[20px]" style={{ borderRadius: 18 }}>
+      {/* Desktop floating pill — hidden on mobile, fixed top */}
+      <header className="hidden md:flex h-[56px] card-shell items-center justify-between shrink-0 px-[20px] sticky top-3 z-20 self-start" style={{ borderRadius: 18 }}>
         {/* Left */}
         <div className="flex items-center gap-3">
           <button aria-label="Back" className="w-8 h-8 rounded-full flex items-center justify-center text-[#0A0A0A] hover:bg-[#F5F5F6] transition-colors">
@@ -89,15 +92,17 @@ export function TopHeader({
 
         {/* Right */}
         <div className="flex items-center gap-[12px]">
-          <button aria-label="Help" className="w-8 h-8 rounded-full border border-[#ECECEE] flex items-center justify-center text-[#0A0A0A] hover:bg-[#F7F7F8] transition-colors text-[14px] font-medium">?</button>
+          <button aria-label="Help" className="w-8 h-8 rounded-full bg-[#F7F7F8] flex items-center justify-center hover:bg-[#ECECEE] transition-colors overflow-hidden">
+            <img src="/help.png" alt="Help" width={20} height={20} className="w-5 h-5 object-contain" />
+          </button>
 
-          <button aria-label="Notifications" className="w-8 h-8 rounded-full border border-[#ECECEE] flex items-center justify-center text-[#0A0A0A] hover:bg-[#F7F7F8] transition-colors relative">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M18 8A6 6 0 0 0 6 8c0 7-6 9-6 9h18s-6-2-6-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></svg>
+          <button aria-label="Notifications" className="w-8 h-8 rounded-full bg-[#F7F7F8] flex items-center justify-center hover:bg-[#ECECEE] transition-colors relative overflow-visible">
+            <img src="/notification.png" alt="Notifications" width={18} height={18} className="w-[18px] h-[18px] object-contain" />
             <span className="absolute -top-0.5 -right-0.5 w-[6px] h-[6px] bg-[#FF3B30] rounded-full border border-white" />
           </button>
 
-          <button aria-label="Create" className="w-8 h-8 rounded-full border border-[#ECECEE] flex items-center justify-center text-[#0A0A0A] hover:bg-[#F7F7F8] transition-colors">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14" /></svg>
+          <button aria-label="Create" className="w-8 h-8 rounded-full border border-[#ECECEE] flex items-center justify-center hover:bg-[#F7F7F8] transition-colors overflow-hidden">
+            <img src="/ai.png" alt="AI" width={18} height={18} className="w-[18px] h-[18px] object-contain" />
           </button>
 
           <span className="w-px h-5 bg-[#E5E5E7] mx-1" />
@@ -153,28 +158,44 @@ export function TopHeader({
         </div>
       </header>
 
-      {/* Mobile flush bar — visible only <768 */}
-      <header className="flex md:hidden h-[56px] bg-white border-b border-[#ECECEE] items-center justify-between shrink-0 px-4">
+      {/* Mobile rounded pill — visible only <768, fixed top, round 18px like image */}
+      <header className="flex md:hidden h-[48px] card-shell items-center justify-between shrink-0 px-3 mx-3 mt-3 sticky top-3 z-20 relative" style={{ borderRadius: 18 }}>
         <div className="flex items-center gap-2">
           <button aria-label="Back" className="w-8 h-8 flex items-center justify-center text-[#0A0A0A]">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>
           </button>
           <div className="flex items-center gap-1.5">
-            <div className="w-7 h-7 rounded-[6px] bg-[#0A0A0A] flex items-center justify-center text-white font-extrabold text-[12px]">V</div>
+            <img src="/logo.png" alt="VedaAI" className="w-7 h-7 rounded-[6px] object-contain shrink-0" />
             <span className="font-bold text-[15px] tracking-tight text-[#0A0A0A]">VedaAI</span>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button aria-label="Notifications" className="w-8 h-8 rounded-full flex items-center justify-center text-[#0A0A0A] relative">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M18 8A6 6 0 0 0 6 8c0 7-6 9-6 9h18s-6-2-6-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></svg>
-            <span className="absolute top-1 right-1 w-2 h-2 bg-[#FF3B30] rounded-full border border-white" />
+        <div className="flex items-center gap-1.5">
+          <button aria-label="Notifications" className="w-8 h-8 rounded-full flex items-center justify-center relative shrink-0">
+            <img src="/notification.png" alt="Notifications" width={18} height={18} className="w-[18px] h-[18px] object-contain" />
+            <span className="absolute top-1 right-1 w-1.5 h-1.5 bg-[#FF3B30] rounded-full border border-white" />
           </button>
-          <button onClick={onMenuClick} aria-label={mobileDrawerOpen ? "Close menu" : "Open menu"} className="w-8 h-8 flex items-center justify-center text-[#0A0A0A]">
-            <span className="relative w-[18px] h-[14px] flex flex-col justify-between">
-              <span className={`block h-[2px] bg-current rounded-full transition-all duration-200 ${mobileDrawerOpen ? "rotate-45 translate-y-[6px]" : ""}`} />
-              <span className={`block h-[2px] bg-current rounded-full transition-all duration-200 ${mobileDrawerOpen ? "opacity-0" : "opacity-100"}`} />
-              <span className={`block h-[2px] bg-current rounded-full transition-all duration-200 ${mobileDrawerOpen ? "-rotate-45 -translate-y-[6px]" : ""}`} />
-            </span>
+          {/* Auth: small Sign In pill when logged out, avatar when logged in — like desktop */}
+          <div className="relative">
+            {user ? (
+              <button ref={mobileProfileRef} onClick={() => setDropdownOpen((v) => !v)} className="w-7 h-7 rounded-full overflow-hidden border border-[#ECECEE] shrink-0 flex">
+                <img src={avatarUrl} alt={displayName} className="w-full h-full object-cover" />
+              </button>
+            ) : (
+              <button onClick={handleSignIn} className="h-7 px-3 rounded-full bg-[#0A0A0A] text-white text-[11px] font-semibold hover:bg-black transition-colors shrink-0">Sign In</button>
+            )}
+            {user && dropdownOpen && (
+              <div ref={mobileDropdownRef} className="absolute right-0 top-[calc(100%+8px)] w-[200px] bg-white rounded-[12px] p-2 dropdown-enter z-30" style={{ boxShadow: "0 8px 24px rgba(0,0,0,0.12)", border: "1px solid rgba(0,0,0,0.06)" }} role="menu">
+                <div className="flex items-center gap-3 p-2 border-b border-[#ECECEE] mb-2">
+                  <img src={avatarUrl} alt="" className="w-8 h-8 rounded-full object-cover" />
+                  <div className="min-w-0"><p className="text-[12px] font-semibold text-[#0A0A0A] truncate">{displayName}</p><p className="text-[10px] text-[#8A8A8E] truncate">{displayEmail}</p></div>
+                </div>
+                <button role="menuitem" onClick={() => setDropdownOpen(false)} className="w-full text-left h-9 px-3 rounded-[8px] text-[13px] hover:bg-[#F5F5F6]">My Profile</button>
+                <button role="menuitem" onClick={handleLogout} className="w-full text-left h-9 px-3 rounded-[8px] text-[13px] text-[#FF3B30] hover:bg-[#FFF1F0]">Log Out</button>
+              </div>
+            )}
+          </div>
+          <button onClick={onMenuClick} aria-label={mobileDrawerOpen ? "Close menu" : "Open menu"} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-[#F7F7F8] transition-colors overflow-hidden shrink-0">
+            <img src="/hamburger.png" alt="Menu" width={20} height={20} className="w-5 h-5 object-contain" />
           </button>
         </div>
       </header>
