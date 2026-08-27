@@ -151,7 +151,7 @@ body {
   animation: drawer-in 280ms cubic-bezier(0.32, 0.72, 0, 1);
 }
 
-/* Sparkle pulse for extracting */
+/* Sparkle pulse for extracting (legacy) */
 @keyframes sparkle-pulse {
   0%,
   100% {
@@ -165,6 +165,55 @@ body {
 }
 .sparkle-pulse {
   animation: sparkle-pulse 1.5s ease-in-out infinite;
+}
+
+/* Extracting — wave gradient on text + sheen on icon */
+@keyframes extracting-shimmer {
+  0% { background-position: 200% center; }
+  100% { background-position: -20% center; }
+}
+@keyframes extracting-sheen {
+  0% { transform: translateX(-68%); opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { transform: translateX(68%); opacity: 0; }
+}
+@keyframes extracting-float {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-3px) scale(1.015); }
+}
+@keyframes extracting-pulse {
+  0%, 100% { filter: drop-shadow(0 4px 12px rgba(241,80,47,0.16)) brightness(1); }
+  50% { filter: drop-shadow(0 6px 18px rgba(241,80,47,0.26)) brightness(1.06); }
+}
+.extracting-shimmer-text {
+  background: linear-gradient(90deg, #0A0A0A 0%, #0A0A0A 32%, #FF6B2C 46%, #FF8A5C 50%, #FF6B2C 54%, #0A0A0A 68%, #0A0A0A 100%);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: extracting-shimmer 1.6s linear infinite;
+  will-change: background-position;
+}
+.extracting-icon-wrap {
+  animation: extracting-float 2.2s ease-in-out infinite;
+  will-change: transform;
+  overflow: visible;
+}
+.extracting-icon-img {
+  animation: extracting-pulse 2.2s ease-in-out infinite;
+  will-change: filter;
+}
+.extracting-sheen {
+  position: absolute;
+  inset: -8% -18%;
+  background: linear-gradient(105deg, transparent 36%, rgba(255,255,255,0.45) 46%, rgba(255,255,255,0.92) 50%, rgba(255,255,255,0.45) 54%, transparent 64%);
+  transform: translateX(-68%);
+  animation: extracting-sheen 1.6s ease-in-out infinite;
+  mix-blend-mode: overlay;
+  pointer-events: none;
+  will-change: transform, opacity;
 }
 
 /* Start mapping pop */
@@ -200,5 +249,16 @@ body {
   * {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
+  }
+  .extracting-shimmer-text {
+    background: none !important;
+    -webkit-text-fill-color: #0A0A0A !important;
+    color: #0A0A0A !important;
+    animation: none !important;
+  }
+  .extracting-sheen,
+  .extracting-icon-wrap,
+  .extracting-icon-img {
+    animation: none !important;
   }
 }

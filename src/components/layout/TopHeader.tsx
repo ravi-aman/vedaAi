@@ -77,8 +77,8 @@ export function TopHeader({
 
   return (
     <>
-      {/* Desktop floating pill — hidden on mobile, fixed top */}
-      <header className="hidden md:flex h-[56px] card-shell items-center justify-between shrink-0 px-[20px] sticky top-3 z-20 self-start" style={{ borderRadius: 18 }}>
+      {/* Desktop floating pill — hidden on mobile, as in Image 1 */}
+      <header className="hidden md:flex h-[56px] card-shell items-center justify-between shrink-0 px-[20px]" style={{ borderRadius: 18 }}>
         {/* Left */}
         <div className="flex items-center gap-3">
           <button aria-label="Back" className="w-8 h-8 rounded-full flex items-center justify-center text-[#0A0A0A] hover:bg-[#F5F5F6] transition-colors">

@@ -263,31 +263,31 @@ export default function ResultsPage() {
         <div className="flex flex-1 flex-col min-w-0 gap-0 md:gap-3 min-h-0 overflow-hidden">
           <TopHeader onMenuClick={() => setMobileOpen(true)} mobileDrawerOpen={mobileOpen} />
 
-          {/* Mobile segmented control */}
-          <div className="md:hidden px-3 py-2 bg-white border-b border-[#ECECEE]">
-            <div className="flex bg-[#F2F3F5] rounded-full p-1 gap-1">
+          {/* Mobile segmented control — pixel-matched to Image 1: black pill selected */}
+          <div className="md:hidden mx-3 mt-3 shrink-0">
+            <div className="flex bg-white rounded-full p-1.5 border border-black/[0.06] shadow-sm gap-1">
               <button
                 onClick={() => setMobileTab("questions")}
-                className={`flex-1 py-2 text-[13px] font-medium rounded-full transition-all duration-150 ${mobileTab === "questions" ? "bg-white shadow-sm text-[#0A0A0A]" : "text-[#8A8A8E]"}`}
+                className={`flex-1 h-[36px] text-[14px] font-medium rounded-full transition-all duration-150 flex items-center justify-center ${mobileTab === "questions" ? "bg-[#0A0A0A] text-white shadow-sm" : "text-[#5A5A5E] bg-transparent"}`}
               >
                 Questions
               </button>
               <button
                 onClick={() => setMobileTab("viewer")}
-                className={`flex-1 py-2 text-[13px] font-medium rounded-full transition-all duration-150 ${mobileTab === "viewer" ? "bg-white shadow-sm text-[#0A0A0A]" : "text-[#8A8A8E]"}`}
+                className={`flex-1 h-[36px] text-[14px] font-medium rounded-full transition-all duration-150 flex items-center justify-center ${mobileTab === "viewer" ? "bg-[#0A0A0A] text-white shadow-sm" : "text-[#5A5A5E] bg-transparent"}`}
               >
                 Answer Sheet
               </button>
             </div>
           </div>
 
-          {/* Two independent rounded cards with 16px gap inside light-gray content area */}
-          <div className="flex flex-1 min-h-0 gap-3 bg-transparent overflow-hidden">
+          {/* Two independent rounded cards — mobile gets outer margins to match Image 1 */}
+          <div className="flex flex-1 min-h-0 gap-3 bg-transparent overflow-hidden mx-3 mt-3 mb-3 md:mx-0 md:mt-0 md:mb-0">
             {/* Left panel — Extracted Questions: white bg, 20px radius, padding 16px */}
             <div className={`flex flex-col shrink-0 bg-white rounded-[20px] card-shell overflow-hidden w-full md:w-[420px] xl:w-[460px] ${mobileTab === "viewer" ? "hidden md:flex" : "flex"}`}>
               <div className="flex items-center justify-between px-4 pt-4 pb-3 shrink-0">
-                <h2 className="text-[14px] font-bold text-[#0A0A0A]">Extracted Questions (from question paper)</h2>
-                <button onClick={handleExpandAll} className="text-[12px] font-medium text-[#FF5A36] hover:underline">
+                <h2 className="text-[13px] md:text-[14px] font-bold text-[#0A0A0A] leading-none">Extracted Questions (from question paper)</h2>
+                <button onClick={handleExpandAll} className="hidden md:block text-[12px] font-medium text-[#FF5A36] hover:underline shrink-0 ml-3">
                   {expandAll ? "Collapse All" : "Expand All"}
                 </button>
               </div>
