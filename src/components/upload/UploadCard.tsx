@@ -125,7 +125,7 @@ export function UploadCard({ kind, title, accentWord, file, onFileSelect, onRemo
 /** Decorative avatar with peach ring + 4 dots — enlarged per request */
 export function UploadAvatar() {
   return (
-    <div className="relative w-[112px] h-[112px] md:w-[132px] md:h-[132px] lg:w-[148px] lg:h-[148px] flex items-center justify-center">
+    <div className="relative w-[112px] h-[112px] sm:w-[132px] sm:h-[132px] md:w-[176px] md:h-[176px] lg:w-[200px] lg:h-[200px] flex items-center justify-center">
       {/* outer peach ring */}
       <div className="absolute inset-0 rounded-full bg-[#FDE3D8]/70" />
       <div className="absolute inset-[8px] md:inset-[9px] rounded-full bg-white shadow-sm overflow-hidden border border-white">
