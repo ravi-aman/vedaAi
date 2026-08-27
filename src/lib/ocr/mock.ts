@@ -43,6 +43,14 @@ export class MockOcrProvider implements OcrProvider {
             confidence: 0.9,
           },
         ],
+        lines: [
+          {
+            text: `Mock OCR page ${i + 1} text`,
+            boundingBox: { x: 0.05, y: 0.1, width: 0.9, height: 0.05 },
+            confidence: 0.9,
+            pageNumber: i + 1,
+          },
+        ],
         confidence: 0.92,
         width: 800,
         height: 1100,

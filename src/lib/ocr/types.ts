@@ -1,7 +1,15 @@
+export interface OcrLine {
+  text: string;
+  boundingBox: NormalizedBox;
+  confidence: number;
+  pageNumber: number;
+}
+
 export interface OcrPageResult {
   pageNumber: number;
   text: string;
   blocks: OcrBlock[];
+  lines: OcrLine[];
   confidence: number;
   width: number;
   height: number;

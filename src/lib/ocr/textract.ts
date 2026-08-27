@@ -211,16 +211,17 @@ export function normalizeTextractBlocks(blocks: any[]): OcrPageResult[] {
         pageNumber: pageNum,
         text: "",
         blocks: [],
+        lines: [],
         confidence: pb.Confidence ?? 0.99,
         width: 0, // Textract doesn't give pixel dims; we keep 0 and treat bbox as already normalized
         height: 0,
         rotation: 0,
-      });
+      } as any);
     }
   }
   // Ensure at least page 1 exists
   if (pagesMap.size === 0) {
-    pagesMap.set(1, { pageNumber: 1, text: "", blocks: [], confidence: 0.99, width: 0, height: 0, rotation: 0 });
+    pagesMap.set(1, { pageNumber: 1, text: "", blocks: [], lines: [], confidence: 0.99, width: 0, height: 0, rotation: 0 } as any);
   }
 
   // Map page -> lines
@@ -255,6 +256,18 @@ export function normalizeTextractBlocks(blocks: any[]): OcrPageResult[] {
     // Combine text per page from LINE.Text
     const pageText = lines.map((l) => l.Text || "").join("\n");
     pageResult.text = pageText;
+    // Preserve per-line geometry for deterministic parsers
+    (pageResult as any).lines = lines.map((l: any) => ({
+      text: l.Text || "",
+      boundingBox: {
+        x: l.Geometry?.BoundingBox?.Left ?? 0,
+        y: l.Geometry?.BoundingBox?.Top ?? 0,
+        width: l.Geometry?.BoundingBox?.Width ?? 0,
+        height: l.Geometry?.BoundingBox?.Height ?? 0,
+      },
+      confidence: (l.Confidence ?? 95) / 100,
+      pageNumber: pageNum,
+    }));
 
     // Textract doesn't expose paragraphs cleanly for handwriting; we synthesize blocks:
     // Group lines into blocks by vertical gap (if gap > 0.03 * page height, new block)

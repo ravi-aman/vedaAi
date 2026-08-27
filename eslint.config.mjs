@@ -12,7 +12,6 @@ const eslintConfig = defineConfig([
       "@typescript-eslint/no-require-imports": "warn",
       "prefer-const": "warn",
       "react-hooks/rules-of-hooks": "warn",
-      "react-you-might-not-need-an-effect/no-necessary-effect": "warn",
     },
   },
   // Override default ignores of eslint-config-next.

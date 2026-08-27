@@ -1,49 +1,52 @@
-# AI_PIPELINE.md — VedaAI AI Design
+# AI_PIPELINE.md — VedaAI AI Design (Post-Vision Removal)
 
 ## Why AI, Where, and Where Not
 
-**Use AI for:**
-- Difficult OCR/vision (handwriting, equations, diagrams)
-- Semantic understanding of question text vs handwritten answer
-- Structure interpretation when regex/heuristics insufficient
-- Ambiguous mapping disambiguation (no explicit label)
+**Use AI for (optional, not mandatory):**
+- Ambiguous `question ↔ answer` mapping when explicit labels missing/conflicting — semantic similarity via text.
+- Optional grading/feedback (future).
 
-**Never use AI for:**
-- File validation, security, coordinate conversion, persistence, job lifecycle, retries, schema enforcement, numeric transforms, deterministic geometry.
+**Never use AI for (deterministic via Textract + geometry):**
+- OCR (Textract)
+- Question numbering / subpart detection (`11(a)`, `Q1`) — regex + `normalizeNumber`
+- Reading order / multi-column — geometry `Top`/`Left` clustering
+- Answer region detection — label regex + spatial continuity
+- Bounding boxes / highlight localization — Textract `Geometry.BoundingBox`
+- File validation, security, coordinate conversion, persistence, retries.
+
+**Textract is source of truth** — see `docs/OCR_PIPELINE.md` + `docs/TEXTRACT_VS_VISION_AUDIT.md`.
 
 ## Provider Abstraction
 
 ```ts
 interface AIProvider {
-  extractStructure(input: ExtractStructureInput): Promise<ExtractStructureResult>
-  detectAnswerRegions(input: DetectAnswersInput): Promise<DetectAnswersResult>
-  analyzeAmbiguousMapping(input: AmbiguousMappingInput): Promise<AmbiguousMappingResult>
+  // Vision methods deprecated — not called in production (kept for mock/tests)
+  extractStructure?(input: ExtractStructureInput): Promise<ExtractStructureResult>
+  detectAnswerRegions?(input: DetectAnswersInput): Promise<DetectAnswersResult>
+  analyzeAmbiguousMapping(input: AmbiguousMappingInput): Promise<AmbiguousMappingResult> // optional semantic
 }
 ```
 
 - Provider code isolated in `src/lib/ai/providers/`
-- `OpenAIProvider` implements via `openai` SDK (`chat.completions.create` with vision)
-- `MockAIProvider` under `src/lib/ai/providers/mock.ts` — used ONLY in tests/fixtures, never imported in production route handlers (guarded by `AI_PROVIDER=mock`)
-- Switching provider requires only new class + config change.
+- `OpencodeZenProvider` implements `analyzeAmbiguousMapping` via `https://opencode.ai/zen/v1` with fallback chain `laguna-s-2.1-free` → `nemotron-3.5-lightning-free` → `nemotron-3-ultra-free` → ... (verified via `GET /models`, handles `429 FreeUsageLimitError`/`500`)
+- `MockAIProvider` under `src/lib/ai/providers/mock.ts` — used ONLY in tests/fixtures (`AI_PROVIDER=mock` in `vitest.config.ts`), never in production when `OCR_PROVIDER=textract`
+- `OpenAIProvider` retained for `openai-compatible` via `baseURL`, but not used for vision.
 
-## Stages
+## Stages (Current Production)
 
-### 1. extractStructure (Question Paper)
-- **Why AI:** printed PDFs vary wildly; vision handles multi-column, tables, headers/footers.
-- **Input:** page images (PNG base64, max 10 pages per call, chunked), detected numbering hints from regex layer.
-- **Output schema:** `QuestionExtractionSchema` (Zod): `{ questions: [{ rawNumber, normalizedNumber, text, rawText, pageRefs, sourceRegions: [{pageId, box:[x,y,w,h]}], parentNumber?, partType, marks?, confidence, evidence[] }] }`
-- **Validation:** parse → Zod → semantic (no duplicate normalizedNumber at same depth) → domain (orderIndex contiguous) → accept/retry/fail
-- **Failure:** malformed JSON → retry 3× (exp backoff); still invalid → stage FAILED `MODEL_OUTPUT_INVALID`
-- **Fallback:** heuristic regex extraction (generic patterns) merges with AI result; heuristic never invents coordinates.
+### 1. extractStructure — REPLACED by deterministic `parseQuestionsFromTextract`
 
-### 2. detectAnswerRegions (Answer Sheet)
-- **Why AI:** handwriting detection, diagram vs text, crossed-out handling.
-- **Input:** answer sheet page images + OCR tokens with bbox.
-- **Output schema:** `AnswerDetectionSchema`: `{ regions: [{ pageId, boxes, rawText, questionLabel?, labelConfidence, visualConfidence, ocrConfidence, orderIndex }] }`
-- **Validation:** boxes normalized [0,1], pageId exists, confidence 0-1.
-- **Limitations:** severe blur/low-contrast → low visualConfidence → mapped as UNCERTAIN, not forced.
+- **Why deterministically:** printed question labels are regular; regex + geometry is reliable; Vision hallucinates boxes and costs.
+- **Implementation:** `src/lib/structure/question-parser.ts` — `QUESTION_LABEL_RE` handles `1, Q1, Question 1, 11(a), 11 (a), 11(a)(i)`, preserves `rawNumber`, `normalizeNumber` for `normalizedNumber/depth/partType/parent`, merges multi-line, extracts `marks`, per-page `bboxesByPage` from Textract `LINE` bbox, confidence avg, filters footer page numbers.
+- **No image sent to LLM.**
 
-### 3. analyzeAmbiguousMapping
+### 2. detectAnswerRegions — REPLACED by deterministic `segmentAnswersFromTextract`
+
+- **Why deterministically:** answer labels are explicit (`Q1, Ans 1, 11(a)`); spatial continuity + page continuity from Textract geometry is sufficient.
+- **Implementation:** `src/lib/structure/answer-segmentation.ts` — `ANSWER_LABEL_RE`, groups lines until next label, handles multi-page (`bboxesByPage.size>1`), produces `SegmentedAnswer` with real `boundingBox`.
+- **No image sent to LLM.**
+
+### 3. analyzeAmbiguousMapping (Optional Semantic)
 - **Why AI:** when explicit label missing or multiple candidates.
 - **Input:** candidate question texts + answer region text + neighbor context (never bulk OCR concatenated into system prompt; data via separate `user` message with clear delimiter).
 - **Prompt structure:**

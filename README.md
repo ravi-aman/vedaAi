@@ -1,6 +1,6 @@
 # VedaAI — AI Assessment Extraction & Answer Mapping
 
-Teacher-facing Next.js application: **UPLOAD → VALIDATE → PREPROCESS → EXTRACT → STRUCTURE → DETECT ANSWERS → MATCH → VALIDATE → LOCALIZE → HIGHLIGHT → REVIEW**
+Teacher-facing Next.js application: **UPLOAD → VALIDATE → S3 → TEXTRACT (source of truth) → OCR NORMALIZE → QUESTION PARSER (deterministic) / ANSWER SEGMENTATION (geometry) → MATCH → VALIDATE → LOCALIZE → HIGHLIGHT → REVIEW** (LLM only for ambiguous semantic matching, not for OCR)
 
 Upload a printed question paper (PDF/image) + a handwritten answer sheet (PDF/image) → get ordered questions with sub-parts preserved, answer regions detected, evidence-based mapping with uncertainty, and exact highlight navigation.
 
@@ -39,28 +39,30 @@ VedaAI extracts every question in printed order (preserving raw numbering), dete
 ### 2. Architecture Diagram
 ```
 CLIENT (Next.js App Router)            SERVER (Route Handlers)
-UploadDropzone ──► POST /api/jobs ──► JobStore (in-memory) ──► FileStorage (tmp)
-      │                  │                    │                      │
-      └─► /api/jobs/:id/upload              │              PDF/image inspection
-                                             ▼
+UploadDropzone ──► POST /api/jobs ──► JobStore (in-memory) ──► FileStorage (tmp) ──► S3 (vedaaistorage/ocr-input)
+      │                  │                    │                      │                     │
+      └─► /api/jobs/:id/upload              │              PDF/image inspection    Textract async
+                                             ▼                                   StartDocumentAnalysis
                                       Job lifecycle: CREATED→VALIDATING→PREPROCESSING
-                                                        →EXTRACTING→STRUCTURING→MATCHING
+                                                        →OCR_SUBMITTED→OCR_PROCESSING→OCR_COMPLETED
+                                                        →EXTRACTING (deterministic Textract parsers, no Vision)
+                                                        →STRUCTURING→MATCHING (deterministic + optional LLM semantic)
                                                         →LOCALIZING→VALIDATING_RESULT→COMPLETED
                                                         →FAILED/CANCELLED
                                              │
                               ┌──────────────┼──────────────┐
                               │              │              │
-                           AIProvider    OcrProvider   Coordinate transforms
-                           (vision)      (tokens)      [0,1] normalized
+                     LLM (optional)    Textract      Coordinate transforms
+                 (semantic only)   (source of truth)  [0,1] normalized
                               │              │              │
                               └────── Evidence aggregation ─┘
                                              │
-                                        Decision layer
-                                        HighlightRegion
+                                        Decision layer MATCHED/UNCERTAIN/UNANSWERED/UNMATCHED
+                                        HighlightRegion (real bbox)
                                              │
                               GET /api/jobs/:id/result ──► Results UI
                                                             QuestionsPanel | ViewerPanel
-                                                            HighlightOverlay → pdfjs-dist
+                                                            HighlightOverlay → pdfjs-dist (exact)
 ```
 
 ### 3. Request / Job Lifecycle
@@ -73,10 +75,10 @@ App Router (`src/app/`): `/` upload → `/processing/[jobId]` → `/results/[job
 Route Handlers under `src/app/api/` use `lib/config` (single validated module), `lib/errors` (typed codes), `lib/jobs` (lifecycle), `lib/storage` (interfaces), `lib/logging` (pino). All AI calls server-side.
 
 ### 6. AI Architecture
-See `docs/AI_PIPELINE.md`. `AIProvider { analyzeDocument, extractStructure, analyzeAmbiguousMapping }` isolated in `src/lib/ai/providers/`. Responses validated via Zod; malformed → bounded retry (max 3, exp backoff+jitter) → `FAILED/MODEL_OUTPUT_INVALID`. No concatenated OCR in system prompt; system/data separation.
+See `docs/AI_PIPELINE.md`. `AIProvider { analyzeAmbiguousMapping }` (LLM only for ambiguous semantic matching, optional). Responses validated via Zod; malformed → bounded retry (max 3, exp backoff+jitter) → `FAILED`. Vision LLM **not** used for normal extraction. See `docs/TEXTRACT_VS_VISION_AUDIT.md`.
 
 ### 7. OCR Pipeline
-`OcrProvider` interface → `AiVisionOcrProvider` primary, `MockOcrProvider` for tests. Tokens: `{ text, bbox:[x,y,w,h], confidence }`. Reading order from geometry (y then x, x-clustering for multi-column), not OCR order.
+`OcrProvider` → `TextractOcrProvider` (real, `StartDocumentAnalysis` + `GetDocumentAnalysis` + pagination) + `MockOcrProvider` (tests only). `OcrDocumentResult` preserves `lines/blocks/paragraphs/words` with `boundingBox [0,1]`, `confidence`, `pageNumber`, `relationships`. Reading order from geometry (y then x, x-clustering for multi-column), not OCR order. `docs/OCR_PIPELINE.md` + `docs/AWS_TEXTRACT.md`.
 
 ### 8. Document-Processing Pipeline
 File validation (magic bytes via `file-type`) before PDF work. PDF: `pdfjs-dist` inspect page count/dimensions/rotation; render at 2× for vision; preserve `original→processing` dims. Image: `sharp` orientation, cap 3000px, preserve mapping.
@@ -107,16 +109,17 @@ Next.js standalone. Long processing: server holds job in memory; client polls. V
 
 ### 17. Environment Variables
 **App runtime (server-only):**
-- `AI_PROVIDER` = `openai` | `openai-compatible` | `mock`
-- `AI_MODEL` (e.g., `gpt-4o-mini`)
-- `AI_API_KEY` (never NEXT_PUBLIC)
-- `AI_BASE_URL` (optional)
+- `OCR_PROVIDER` = `textract` | `mock` (tests only)
+- `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_S3_BUCKET`, `AWS_TEXTRACT_OUTPUT_BUCKET`, `AWS_S3_INPUT_PREFIX/OUTPUT_PREFIX`, `AWS_SNS_*/SQS` optional
+- `AI_PROVIDER` = `opencode-zen` (optional semantic) | `mock` (tests)
+- `AI_MODEL` = `laguna-s-2.1-free` (free, verified) + fallbacks `nemotron-3.5-lightning-free` etc. (see `.env.example`)
+- `AI_API_KEY`, `AI_BASE_URL` (never NEXT_PUBLIC)
 - `MAPPING_HIGH_THRESHOLD`, `MAPPING_REVIEW_THRESHOLD` optional
 
 **Coding-agent compatibility (not app creds):**
-- `OPENCODE_DEFAULT_MODEL`, `OPENCODE_API_KEY`, `OPENCODE_API_BASE` — mirrored via `opencode.json` (see §31)
+- `OPENCODE_DEFAULT_MODEL`, `OPENCODE_API_KEY`, `OPENCODE_API_BASE` — mirrored via `opencode.json`
 
-Validated in `src/lib/config/index.ts`; missing → 500 with clear code `CONFIGURATION_ERROR`.
+Validated in `src/lib/config/index.ts`; missing Textract bucket → `OCR_CONFIGURATION_ERROR` (fails clearly, never silent mock). See `.env.example` + `docs/AWS_TEXTRACT.md`.
 
 ### 18. Security Considerations
 - Sanitize filenames, generated IDs, magic-byte MIME check, size/page limits, path traversal prevention.
