@@ -7,8 +7,8 @@ export class MockOcrProvider implements OcrProvider {
 
   async submitDocument(request: SubmitOcrRequest): Promise<{ operationId: string; outputUri: string }> {
     if (this.shouldFailSubmit) throw Object.assign(new Error("Mock submit failed"), { code: "OCR_SUBMISSION_FAILED" });
-    const opId = `projects/mock/locations/us/operations/mock-${request.jobId}-${Date.now()}`;
-    const uri = `gs://mock-bucket/ocr-output/${request.jobId}/`;
+    const opId = `mock-textract-${request.jobId}-${Date.now()}`;
+    const uri = `s3://mock-bucket/textract-output/${request.jobId}/`;
     this.ops.set(opId, { status: "DONE", outputUri: uri, pages: request.pageCount });
     return { operationId: opId, outputUri: uri };
   }
@@ -48,7 +48,7 @@ export class MockOcrProvider implements OcrProvider {
         height: 1100,
         rotation: 0,
       })),
-      provider: "google-cloud-vision",
+      provider: "amazon-textract",
       providerVersion: "v1-mock",
       operationId,
       completedAt: new Date().toISOString(),

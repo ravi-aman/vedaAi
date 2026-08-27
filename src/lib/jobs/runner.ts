@@ -9,7 +9,7 @@ import { aggregateScore, buildEvidence } from "@/lib/evidence/aggregate";
 import { decideForQuestion } from "@/lib/decision";
 import { generateId } from "@/lib/storage";
 import { getOcrProvider } from "@/lib/ocr/factory";
-import { uploadBufferToGcs, deleteGcsPrefix } from "@/lib/ocr/gcs";
+import { uploadBufferToS3, deleteS3Prefix } from "@/lib/ocr/s3";
 import { OcrError, OcrErrorCodes } from "@/lib/ocr/errors";
 import type { OcrDocumentResult } from "@/lib/ocr/types";
 
@@ -122,7 +122,7 @@ async function runJob(jobId: string) {
     const prep = await preprocess(jobId);
     await updateStage("PREPROCESSING", "completed");
 
-    // OCR — Google Cloud Vision DOCUMENT_TEXT_DETECTION async
+    // OCR — Amazon Textract async
     await updateStage("OCR_SUBMITTED", "in_progress");
     const ocrData = await ocrStage(jobId);
     await updateStage("OCR_SUBMITTED", "completed");
@@ -167,13 +167,13 @@ async function runJob(jobId: string) {
 
     resultStore.set(jobId, localized);
 
-    // Cleanup GCS staging after success (best-effort) — delete temp objects only, never primary Supabase storage
+    // Cleanup S3 staging after success (best-effort) — delete temp objects only, never primary Supabase storage
     try {
       const cfg = getConfig() as any;
-      const bucket = cfg.GOOGLE_CLOUD_STORAGE_BUCKET;
+      const bucket = cfg.AWS_S3_BUCKET;
       if (bucket) {
-        await deleteGcsPrefix(bucket, `${cfg.GOOGLE_CLOUD_OCR_INPUT_PREFIX || "ocr-input"}/${jobId}/`).catch(() => {});
-        await deleteGcsPrefix(bucket, `${cfg.GOOGLE_CLOUD_OCR_OUTPUT_PREFIX || "ocr-output"}/${jobId}/`).catch(() => {});
+        await deleteS3Prefix(bucket, `${cfg.AWS_S3_INPUT_PREFIX || "ocr-input"}/${jobId}/`).catch(() => {});
+        await deleteS3Prefix(bucket, `${cfg.AWS_S3_OUTPUT_PREFIX || "ocr-output"}/${jobId}/`).catch(() => {});
       }
     } catch {}
   } catch (e: any) {
@@ -241,7 +241,7 @@ export const resultStore = new Map<string, any>();
 
 async function ocrStage(jobId: string): Promise<{ qpOcr?: OcrDocumentResult; asOcr?: OcrDocumentResult }> {
   const cfg = getConfig() as any;
-  const ocrProviderName = cfg.OCR_PROVIDER || "google-vision";
+  const ocrProviderName = cfg.OCR_PROVIDER || "textract";
 
   // Idempotency: reuse if already completed and stored
   const existing = ocrResultStore.get(jobId);
@@ -271,11 +271,11 @@ async function ocrStage(jobId: string): Promise<{ qpOcr?: OcrDocumentResult; asO
   const qpPages = await pageStoreApi.getByDocument(qpDoc.id);
   const asPages = await pageStoreApi.getByDocument(asDoc.id);
 
-  // Mock path — no GCS, immediate synthetic OCR
+  // Mock path — no S3, immediate synthetic OCR
   if (ocrProviderName === "mock") {
     const provider = getOcrProvider();
-    const qpRes = await provider.getOperationResult("mock-qp", `gs://mock/${jobId}/qp/`);
-    const asRes = await provider.getOperationResult("mock-as", `gs://mock/${jobId}/as/`);
+    const qpRes = await provider.getOperationResult("mock-qp", `s3://mock/mock/${jobId}/qp/`);
+    const asRes = await provider.getOperationResult("mock-as", `s3://mock/mock/${jobId}/as/`);
     // Override page counts to match real docs
     qpRes.pages = qpRes.pages.slice(0, qpPages.length);
     asRes.pages = asRes.pages.slice(0, asPages.length);
@@ -299,66 +299,66 @@ async function ocrStage(jobId: string): Promise<{ qpOcr?: OcrDocumentResult; asO
     return out;
   }
 
-  // Real Google Vision path
-  if (!cfg.GOOGLE_CLOUD_PROJECT_ID || !cfg.GOOGLE_CLOUD_STORAGE_BUCKET) {
-    throw new AppError(ErrorCodes.OCR_CONFIGURATION_ERROR, "Google Cloud OCR not configured. Set GOOGLE_CLOUD_PROJECT_ID and GOOGLE_CLOUD_STORAGE_BUCKET or use OCR_PROVIDER=mock");
+  // Real AWS Textract path
+  if (!cfg.AWS_S3_BUCKET) {
+    throw new AppError(ErrorCodes.OCR_CONFIGURATION_ERROR, "AWS OCR not configured. Set AWS_REGION and AWS_S3_BUCKET or use OCR_PROVIDER=mock");
   }
 
   const provider = getOcrProvider();
-  const bucket = cfg.GOOGLE_CLOUD_STORAGE_BUCKET as string;
-  const inputPrefix = cfg.GOOGLE_CLOUD_OCR_INPUT_PREFIX || "ocr-input";
-  const outputPrefix = cfg.GOOGLE_CLOUD_OCR_OUTPUT_PREFIX || "ocr-output";
+  const bucket = cfg.AWS_S3_BUCKET as string;
+  const inputPrefix = cfg.AWS_S3_INPUT_PREFIX || "ocr-input";
+  const outputPrefix = cfg.AWS_S3_OUTPUT_PREFIX || "ocr-output";
   const timeoutMs: number = cfg.OCR_OPERATION_TIMEOUT_MS || 300000;
   const pollMs: number = cfg.OCR_POLL_INTERVAL_MS || 5000;
   const maxRetries: number = cfg.OCR_MAX_RETRIES || 3;
 
   async function processOneDoc(doc: any, pages: any[], kind: "questionPaper" | "answerSheet"): Promise<OcrDocumentResult> {
     const safeJob = jobId.replace(/[^a-zA-Z0-9-]/g, "");
-    const inputObject = `${inputPrefix}/${safeJob}/${kind}.pdf`;
+    const inputKey = `${inputPrefix}/${safeJob}/${kind}.pdf`;
     const outputPref = `${outputPrefix}/${safeJob}/${kind}/`;
-    const inputUri = `gs://${bucket}/${inputObject}`;
-    const outputUri = `gs://${bucket}/${outputPref}`;
+    const inputUri = `s3://${bucket}/${inputKey}`;
+    const outputUri = `s3://${bucket}/${outputPref}`;
 
     // Read buffer (streaming would be better but buffer is okay for 38MB; avoid duplicate copies)
     const fileId = kind === "questionPaper" ? (await jobStore.get(jobId))!.questionPaperFileId! : (await jobStore.get(jobId))!.answerSheetFileId!;
     const buffer = await fileStorage.read(jobId, fileId);
     const mimeType = doc.mime === "application/pdf" ? "application/pdf" : (doc.mime as any);
 
-    // Upload to GCS staging (idempotent: overwrite)
-    console.log(JSON.stringify({ jobId, stage: "OCR", event: "gcs_upload_start", kind, sizeMb: (buffer.length / 1024 / 1024).toFixed(2), inputUri }));
+    // Upload to S3 staging (idempotent: overwrite)
+    console.log(JSON.stringify({ jobId, stage: "OCR", event: "s3_upload_start", kind, sizeMb: (buffer.length / 1024 / 1024).toFixed(2), inputUri }));
     let attempt = 0;
     while (true) {
       try {
-        await uploadBufferToGcs(bucket, inputObject, buffer, mimeType);
-        console.log(JSON.stringify({ jobId, stage: "OCR", event: "gcs_upload_ok", kind }));
+        await uploadBufferToS3(bucket, inputKey, buffer, mimeType);
+        console.log(JSON.stringify({ jobId, stage: "OCR", event: "s3_upload_ok", kind }));
         break;
       } catch (e: any) {
         attempt++;
         if (attempt >= maxRetries || e.code === OcrErrorCodes.CONFIGURATION_ERROR || e.code === OcrErrorCodes.AUTH_ERROR) throw e;
         const delay = Math.pow(2, attempt) * 500;
-        console.warn(JSON.stringify({ jobId, stage: "OCR", event: "gcs_upload_retry", kind, attempt, delay }));
+        console.warn(JSON.stringify({ jobId, stage: "OCR", event: "s3_upload_retry", kind, attempt, delay }));
         await new Promise((r) => setTimeout(r, delay));
       }
     }
 
-    // Submit Vision asyncBatchAnnotate
-    console.log(JSON.stringify({ jobId, stage: "OCR", event: "vision_submit_start", kind, pageCount: pages.length }));
+    // Submit Textract async analysis
+    console.log(JSON.stringify({ jobId, stage: "OCR", event: "textract_submit_start", kind, pageCount: pages.length }));
     let operationId: string;
     let outUri: string;
     attempt = 0;
     while (true) {
       try {
-        const res = await provider.submitDocument({ jobId, documentId: doc.id, kind, gcsInputUri: inputUri, mimeType: "application/pdf", pageCount: pages.length });
+        const res = await provider.submitDocument({ jobId, documentId: doc.id, kind, s3Bucket: bucket, s3Key: inputKey, mimeType: "application/pdf", pageCount: pages.length });
         operationId = res.operationId;
         outUri = res.outputUri;
-        console.log(JSON.stringify({ jobId, stage: "OCR", event: "vision_submit_ok", kind, operationId: operationId.slice(0, 40) }));
+        console.log(JSON.stringify({ jobId, stage: "OCR", event: "textract_submit_ok", kind, operationId: operationId.slice(0, 40) }));
         break;
       } catch (e: any) {
         attempt++;
         const retryable = e.retryable !== false && e.code !== OcrErrorCodes.AUTH_ERROR && e.code !== OcrErrorCodes.CONFIGURATION_ERROR;
         if (!retryable || attempt >= maxRetries) throw new AppError(e.code || ErrorCodes.OCR_SUBMISSION_FAILED, `OCR submission failed for ${kind}: ${e.message}`);
         const delay = Math.pow(2, attempt) * 1000;
-        console.warn(JSON.stringify({ jobId, stage: "OCR", event: "vision_submit_retry", kind, attempt, delay }));
+        console.warn(JSON.stringify({ jobId, stage: "OCR", event: "textract_submit_retry", kind, attempt, delay }));
         await new Promise((r) => setTimeout(r, delay));
       }
     }

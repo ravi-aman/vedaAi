@@ -13,11 +13,12 @@
     "ai:smoke-test": "tsx scripts/ai-smoke.ts",
     "assessment:smoke-test": "tsx scripts/assessment-smoke.ts",
     "audit": "tsx scripts/audit.ts",
-    "evaluate": "tsx scripts/evaluate.ts"
+    "evaluate": "tsx scripts/evaluate.ts",
+    "test:aws": "tsx scripts/aws-smoke.ts"
   },
   "dependencies": {
-    "@google-cloud/storage": "^8.0.1",
-    "@google-cloud/vision": "^6.0.0",
+    "@aws-sdk/client-s3": "^3.800.0",
+    "@aws-sdk/client-textract": "^3.800.0",
     "@supabase/ssr": "^0.12.5",
     "@supabase/supabase-js": "^2.112.4",
     "file-type": "^22.0.2",

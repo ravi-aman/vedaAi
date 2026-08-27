@@ -1,6 +1,6 @@
 export * from "./types";
 export * from "./errors";
 export * from "./factory";
-export * from "./gcs";
-export { GoogleVisionOcrProvider } from "./google-vision";
+export * from "./s3";
+export { TextractOcrProvider } from "./textract";
 export { MockOcrProvider } from "./mock";

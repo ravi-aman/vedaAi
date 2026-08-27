@@ -10,6 +10,9 @@ export default defineConfig({
       AI_PROVIDER: "mock",
       AI_MODEL: "mock-model",
       AI_API_KEY: "test-key",
+      OCR_PROVIDER: "mock",
+      AWS_REGION: "us-east-1",
+      AWS_S3_BUCKET: "test-bucket",
     },
   },
   resolve: {

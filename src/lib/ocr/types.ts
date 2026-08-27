@@ -51,7 +51,7 @@ export interface OcrDocumentResult {
   documentId: string;
   kind: "questionPaper" | "answerSheet";
   pages: OcrPageResult[];
-  provider: "google-cloud-vision";
+  provider: "amazon-textract";
   providerVersion: string;
   operationId: string;
   completedAt: string;
@@ -72,7 +72,8 @@ export interface SubmitOcrRequest {
   jobId: string;
   documentId: string;
   kind: "questionPaper" | "answerSheet";
-  gcsInputUri: string;
+  s3Bucket: string;
+  s3Key: string;
   mimeType: "application/pdf" | "image/tiff" | "image/png" | "image/jpeg";
   pageCount: number;
 }

@@ -2,7 +2,7 @@ import { z } from "zod";
 
 const envSchema = z.object({
   AI_PROVIDER: z.enum(["opencode-zen", "openai", "openai-compatible", "mock"]).default("opencode-zen"),
-  AI_MODEL: z.string().default("muse-spark-1.2-contributor-free"),
+  AI_MODEL: z.string().default("laguna-s-2.1-free"),
   AI_API_KEY: z.string().optional(),
   AI_BASE_URL: z.string().url().optional().or(z.literal("")).default("https://opencode.ai/zen/v1"),
   // opencode agent compatibility (separate from app runtime)
@@ -19,14 +19,18 @@ const envSchema = z.object({
   EXTRACT_TIMEOUT_MS: z.coerce.number().default(30000),
   DETECT_TIMEOUT_MS: z.coerce.number().default(30000),
   MAPPING_TIMEOUT_MS: z.coerce.number().default(30000),
-  // OCR — Google Cloud Vision DOCUMENT_TEXT_DETECTION (async PDF)
-  OCR_PROVIDER: z.enum(["google-vision", "mock"]).default("google-vision"),
-  GOOGLE_CLOUD_PROJECT_ID: z.string().optional(),
-  GOOGLE_CLOUD_STORAGE_BUCKET: z.string().optional(),
-  GOOGLE_CLOUD_OCR_INPUT_PREFIX: z.string().default("ocr-input"),
-  GOOGLE_CLOUD_OCR_OUTPUT_PREFIX: z.string().default("ocr-output"),
-  GOOGLE_CLOUD_KEY_JSON: z.string().optional(),
-  GOOGLE_APPLICATION_CREDENTIALS: z.string().optional(),
+  // OCR — Amazon Textract (async PDF)
+  OCR_PROVIDER: z.enum(["textract", "mock"]).default("textract"),
+  AWS_REGION: z.string().default("us-east-1"),
+  AWS_ACCESS_KEY_ID: z.string().optional(),
+  AWS_SECRET_ACCESS_KEY: z.string().optional(),
+  AWS_S3_BUCKET: z.string().optional(),
+  AWS_TEXTRACT_OUTPUT_BUCKET: z.string().optional(),
+  AWS_S3_INPUT_PREFIX: z.string().default("ocr-input"),
+  AWS_S3_OUTPUT_PREFIX: z.string().default("ocr-output"),
+  AWS_SNS_TOPIC_ARN: z.string().optional(),
+  AWS_SNS_ROLE_ARN: z.string().optional(),
+  AWS_SQS_QUEUE_URL: z.string().optional(),
   OCR_OPERATION_TIMEOUT_MS: z.coerce.number().default(300000),
   OCR_POLL_INTERVAL_MS: z.coerce.number().default(5000),
   OCR_MAX_RETRIES: z.coerce.number().default(3),
@@ -89,20 +93,29 @@ export function isSupabaseConfigured(): boolean {
   return Boolean(cfg.NEXT_PUBLIC_SUPABASE_URL && cfg.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY);
 }
 
-export function isGoogleOcrConfigured(): boolean {
+export function isAwsOcrConfigured(): boolean {
   const cfg = getConfig() as any;
-  return Boolean(cfg.GOOGLE_CLOUD_PROJECT_ID && cfg.GOOGLE_CLOUD_STORAGE_BUCKET);
+  return Boolean(cfg.AWS_S3_BUCKET && cfg.AWS_REGION);
 }
 
-export function requireGoogleOcrConfig(): void {
+export function requireAwsOcrConfig(): void {
   const cfg = getConfig() as any;
   if (cfg.OCR_PROVIDER === "mock") return;
   const missing: string[] = [];
-  if (!cfg.GOOGLE_CLOUD_PROJECT_ID) missing.push("GOOGLE_CLOUD_PROJECT_ID");
-  if (!cfg.GOOGLE_CLOUD_STORAGE_BUCKET) missing.push("GOOGLE_CLOUD_STORAGE_BUCKET");
+  if (!cfg.AWS_REGION) missing.push("AWS_REGION");
+  if (!cfg.AWS_S3_BUCKET) missing.push("AWS_S3_BUCKET");
+  // Credentials: either explicit keys or IAM role (no keys needed). Only fail if bucket missing.
   if (missing.length > 0) {
     throw new Error(`OCR_CONFIGURATION_ERROR: Missing ${missing.join(", ")}. Set env or use OCR_PROVIDER=mock for tests.`);
   }
+}
+
+// Deprecated aliases — kept for migration grep to fail loudly if old code remains
+export function isGoogleOcrConfigured(): boolean {
+  return isAwsOcrConfigured();
+}
+export function requireGoogleOcrConfig(): void {
+  return requireAwsOcrConfig();
 }
 
 export const mappingThresholds = {

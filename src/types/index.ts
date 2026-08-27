@@ -197,7 +197,7 @@ export interface ProcessingJob {
   pipelineVersion: string;
   modelVersion?: string;
   promptVersion?: string;
-  // OCR metadata (Google Vision async)
+  // OCR metadata (Amazon Textract async)
   ocrOperationId?: string;
   ocrOutputUri?: string;
   ocrInputUri?: string;

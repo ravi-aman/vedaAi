@@ -81,7 +81,7 @@ if (fail > 0) {
   console.log("Fix failures before production. See docs/PRODUCTION_READINESS.md");
   process.exit(1);
 } else {
-  console.log("Audit PASS (static checks). Still need runtime checks: ai:smoke-test, assessment:smoke-test, Supabase, Google OAuth.");
+  console.log("Audit PASS (static checks). Still need runtime checks: ai:smoke-test, assessment:smoke-test, test:aws, Supabase, Google OAuth.");
 }
 
 function getFiles(dir: string): string[] {
