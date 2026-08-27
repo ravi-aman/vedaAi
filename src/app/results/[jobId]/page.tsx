@@ -254,13 +254,13 @@ export default function ResultsPage() {
   const handleExpandAll = () => setExpandAll((v) => !v);
 
   return (
-    <div className="min-h-screen bg-[#EDEEF0] flex flex-col p-0 md:p-4 gap-0 md:gap-4">
+    <div className="h-[100dvh] h-screen bg-[#EDEEF0] flex flex-col p-0 md:p-4 gap-0 md:gap-4 overflow-hidden">
       {showAuthGate && !authGateDismissed && <AuthGate jobId={params.jobId} onClose={() => setAuthGateDismissed(true)} />}
 
-      <div className="flex flex-1 min-h-0 gap-0 md:gap-4">
+      <div className="flex flex-1 min-h-0 gap-0 md:gap-4 overflow-hidden">
         <Sidebar collapsed={sidebarCollapsed} onToggle={handleSidebarToggle} mobileOpen={mobileOpen} onMobileClose={() => setMobileOpen(false)} />
 
-        <div className="flex flex-1 flex-col min-w-0 gap-0 md:gap-4 min-h-0">
+        <div className="flex flex-1 flex-col min-w-0 gap-0 md:gap-4 min-h-0 overflow-hidden">
           <TopHeader onMenuClick={() => setMobileOpen(true)} mobileDrawerOpen={mobileOpen} />
 
           {/* Mobile segmented control */}
