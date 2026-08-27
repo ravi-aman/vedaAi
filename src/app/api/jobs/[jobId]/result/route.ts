@@ -4,7 +4,7 @@ import { resultStore } from "@/lib/jobs/runner";
 import type { ProcessingResult, QuestionResult, AnswerResult } from "@/types";
 import { getGuestSession, isGraceExpired } from "@/lib/auth/guest";
 import { createClient } from "@/lib/supabase/server";
-import { getConfig } from "@/lib/config";
+import { getConfig, isSupabaseConfigured } from "@/lib/config";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ jobId: string }> }) {
   const { jobId } = await params;
@@ -19,7 +19,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
   const cfg = getConfig();
   let currentUserId: string | null = null;
   try {
-    if (cfg.NEXT_PUBLIC_SUPABASE_URL && cfg.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) {
+    if (isSupabaseConfigured()) {
       const supabase = await createClient().catch(() => null);
       if (supabase) {
         const { data } = await supabase.auth.getUser();

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { fileStorage, jobStore } from "@/lib/storage";
 import { getGuestSession } from "@/lib/auth/guest";
 import { createClient } from "@/lib/supabase/server";
-import { getConfig } from "@/lib/config";
+import { getConfig, isSupabaseConfigured } from "@/lib/config";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ jobId: string; fileId: string }> }) {
   const { jobId, fileId } = await params;
@@ -11,7 +11,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
   const cfg = getConfig();
   let currentUserId: string | null = null;
   try {
-    if (cfg.NEXT_PUBLIC_SUPABASE_URL && cfg.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) {
+    if (isSupabaseConfigured()) {
       const supabase = await createClient().catch(() => null);
       if (supabase) {
         const { data } = await supabase.auth.getUser();

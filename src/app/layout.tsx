@@ -10,6 +10,11 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "VedaAI — Assessment Extraction & Answer Mapping",
   description: "Upload question paper & answer sheets to map answers with evidence",
+  icons: {
+    icon: "/logo.png",
+    shortcut: "/logo.png",
+    apple: "/logo.png",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

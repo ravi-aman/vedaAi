@@ -74,9 +74,10 @@ const envSchema = z.object({
   VISION_ENABLED: z.coerce.boolean().default(true),
   VISION_MAX_PAGES: z.coerce.number().int().min(1).max(20).default(1),
   VISION_TIMEOUT_MS: z.coerce.number().default(90000),
-  // Supabase
+  // Supabase — supports both new publishable (sb_publishable_...) and legacy anon (eyJ...) keys
   NEXT_PUBLIC_SUPABASE_URL: z.string().url().optional().or(z.literal("")),
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: z.string().optional(),
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().optional(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
   GUEST_RESULT_GRACE_PERIOD_MS: z.coerce.number().default(90000),
   NEXT_PUBLIC_APP_URL: z.string().url().optional().or(z.literal("")),
@@ -126,8 +127,13 @@ export function requireAiConfig(): AppConfig {
 }
 
 export function isSupabaseConfigured(): boolean {
-  const cfg = getConfig();
-  return Boolean(cfg.NEXT_PUBLIC_SUPABASE_URL && cfg.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY);
+  const cfg = getConfig() as any;
+  return Boolean(cfg.NEXT_PUBLIC_SUPABASE_URL && (cfg.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || cfg.NEXT_PUBLIC_SUPABASE_ANON_KEY));
+}
+
+export function getSupabasePublishableKey(): string | null {
+  const cfg = getConfig() as any;
+  return cfg.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || cfg.NEXT_PUBLIC_SUPABASE_ANON_KEY || null;
 }
 
 export function isAwsOcrConfigured(): boolean {

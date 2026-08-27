@@ -31,7 +31,7 @@ check("opencode.json", fs.existsSync(path.join(root, "opencode.json")), "agent c
 
 // env config
 const example = fs.existsSync(path.join(root, ".env.example")) ? fs.readFileSync(path.join(root, ".env.example"), "utf-8") : "";
-check("AI_PROVIDER not mock in example", example.includes("AI_PROVIDER=opencode-zen"), "default is zen");
+check("AI_PROVIDER not mock in example", example.includes("AI_PROVIDER=openrouter") && !example.includes("AI_PROVIDER=mock"), "default is openrouter");
 check("No hardcoded secret in example", !example.match(/sk-[A-Za-z0-9]{20,}/), "no real key");
 check(".env ignored", (() => {
   try {

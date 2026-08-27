@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jobStore } from "@/lib/storage";
 import { generateId } from "@/lib/storage";
-import { getConfig } from "@/lib/config";
+import { getConfig, isSupabaseConfigured } from "@/lib/config";
 import type { ProcessingJob } from "@/types";
 import { getOrCreateGuestSession } from "@/lib/auth/guest";
 import { createClient } from "@/lib/supabase/server";
@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
     // try to get authenticated user if Supabase configured
     let userId: string | null = null;
     try {
-      if (cfg.NEXT_PUBLIC_SUPABASE_URL && cfg.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) {
+      if (isSupabaseConfigured()) {
         const supabase = await createClient();
         const { data } = await supabase.auth.getUser();
         userId = data.user?.id || null;
