@@ -250,6 +250,7 @@ export default function ResultsPage() {
   const selected = result.questionResults.find((q) => q.question.id === selectedId) || result.questionResults[0];
   const highlights = selected?.highlightRegions || [];
   const activePageId = highlights[0]?.pageId;
+  const activeQuestionLabel = selected?.question?.normalizedNumber || selected?.question?.rawNumber || "";
   const sortedResults = [...result.questionResults].sort((a, b) => a.question.orderIndex - b.question.orderIndex);
   const handleExpandAll = () => setExpandAll((v) => !v);
 
@@ -321,6 +322,7 @@ export default function ResultsPage() {
                 highlights={highlights}
                 activePageId={activePageId}
                 selectedQuestionId={selectedId || undefined}
+                selectedQuestionLabel={activeQuestionLabel}
                 pdfUrl={pdfUrl || undefined}
                 mime={pdfMime || undefined}
               />

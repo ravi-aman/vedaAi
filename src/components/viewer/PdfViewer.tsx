@@ -38,13 +38,17 @@ export function PdfViewer({ pdfUrl, pages, highlights, activePageId }: Props) {
         pdfRef.current = null;
 
         const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
-        // Configure worker: try real worker, fallback to disable
         try {
-          // Use CDN worker matching pdfjs version to avoid bundling issues
-          const version = pdfjs.version || "6.2.108";
-          pdfjs.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/legacy/build/pdf.worker.mjs`;
+          // @ts-ignore pdfjs worker has no declaration
+          await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
+          pdfjs.GlobalWorkerOptions.workerSrc = `pdfjs-dist/legacy/build/pdf.worker.mjs`;
         } catch {
-          pdfjs.GlobalWorkerOptions.workerSrc = "";
+          try {
+            const version = pdfjs.version || "6.2.108";
+            pdfjs.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/legacy/build/pdf.worker.mjs`;
+          } catch {
+            pdfjs.GlobalWorkerOptions.workerSrc = "";
+          }
         }
 
         console.log(`[PdfViewer] loading ${pdfUrl}`);

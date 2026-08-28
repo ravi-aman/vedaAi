@@ -2,9 +2,17 @@ import type { OcrDocumentResult, OcrLine } from "@/lib/ocr/types";
 import type { DocumentPage } from "@/types";
 import { normalizeNumber } from "./numbering";
 
+export interface QuestionOptionParsed {
+  label: string;
+  text: string;
+  rawText: string;
+  bbox?: { x: number; y: number; width: number; height: number };
+}
+
 export interface ParsedQuestion {
   rawNumber: string;
   normalizedNumber: string;
+  displayNumber?: string;
   text: string;
   rawText: string;
   pageNumbers: number[];
@@ -12,8 +20,10 @@ export interface ParsedQuestion {
   confidence: number;
   marks?: number;
   depth: number;
-  partType: "SECTION" | "QUESTION" | "PART" | "SUBPART";
+  partType: "SECTION" | "QUESTION" | "PART" | "SUBPART" | "OPTION" | "INSTRUCTION";
+  kind?: string;
   parent?: string;
+  options?: QuestionOptionParsed[];
 }
 
 // Regex for question label at line start — ONLY numeric-prefixed (require digit base)
@@ -72,46 +82,56 @@ function isSectionOrInstruction(text: string): boolean {
 
 function isPageHeaderFooter(text: string, bbox?: { x: number; y: number; width: number; height: number }): boolean {
   const t = text.trim();
+  if (!t) return false;
+  // Generic page-footer pattern
   if (PAGE_HEADER_FOOTER_RE.test(t) && t.length < 30) return true;
-  if (/^\s*\d+\s*$/.test(t) && bbox && (bbox.y < 0.04 || bbox.y > 0.92)) return true;
-  if (/Please note that the assessment scheme/i.test(t)) return true;
   if (/^\s*Page \d+ of \d+/i.test(t)) return true;
-  // Science paper headers
-  if (/^Code No\./i.test(t)) return true;
-  if (/^Roll No\./i.test(t)) return true;
-  if (/^SET\s*-\s*-/i.test(t)) return true;
-  if (/^Series\s*:/i.test(t)) return true;
-  if (/^Candidates must write the Code/i.test(t)) return true;
-  if (/^onls\s*7\./i.test(t)) return true;
-  if (/^31\/2\/1/i.test(t) && t.length < 15) return true;
-  if (/^RTCT\s*7\./i.test(t)) return true;
   if (/^P\.T\.O\./i.test(t)) return true;
   if (/^NOTE$/i.test(t) && t.length < 10) return true;
-  if (/^Please check that this question/i.test(t)) return true;
-  if (/^Candidates must write the Code/i.test(t)) return true;
-  if (/^onls\s*3th/i.test(t)) return true;
-  if (/^Parth$/i.test(t)) return true;
-  if (/^7\)2$/i.test(t) && t.length < 5) return true; // Science paper header 7)2
-  if (/^NKJH\s+#/i.test(t)) return true;
-  // Top header metadata
-  if (/^Maximum Marks:\s*\d+/i.test(t)) return true;
-  if (/^Time(:|\s)allowed/i.test(t)) return true;
-  if (/^CLASS - X/i.test(t)) return true;
-  if (/^MATHEMATICS STANDARD/i.test(t)) return true;
-  if (/^SAMPLE QUESTION PAPER/i.test(t)) return true;
-  if (/^SCIENCE$/i.test(t) && t.length < 10) return true;
-  if (/^FATTRA/i.test(t)) return true;
-  if (/^31\/ETCH/i.test(t)) return true;
-  // OCR garbage: lines with very low confidence or pure symbols
+
+  // Generic header/footer band: y in top 8% or bottom 8% of page
+  const inHeaderBand = !!bbox && bbox.y < 0.08;
+  const inFooterBand = !!bbox && bbox.y > 0.92;
+  if (inHeaderBand || inFooterBand) {
+    // Single page number in footer/header
+    if (/^\s*\d+\s*$/.test(t)) return true;
+    // Short code-like header fragments (e.g., "Code No.", "Roll No.", "Series :", "SET -", "Maximum Marks:", "Time allowed", subject names)
+    // Detect via generic cues: contains "Code No", "Roll No", "Maximum Marks", "Time", "CLASS", "SAMPLE", plus very short (<25 chars) and in band
+    if (t.length < 30) {
+      if (/^(Code|Roll)\s*No\.?/i.test(t)) return true;
+      if (/^SET\s*[-–]/i.test(t)) return true;
+      if (/^Series\s*:/i.test(t)) return true;
+      if (/^(Maximum Marks|Time)\b/i.test(t)) return true;
+      if (/^(CLASS|SAMPLE QUESTION PAPER|SCIENCE|MATHEMATICS)\b/i.test(t) && t.length < 35) return true;
+    }
+    // Any short (<12 chars) alphanumeric garble in header band with symbols/digits mix is likely header noise — generic OCR garbage filter
+    if (inHeaderBand && t.length < 18 && /^[\w\s\/\-\.#]+$/.test(t) && /[0-9]/.test(t) && /[A-Z]/.test(t) && t.split(/\s+/).length <= 3) {
+      // e.g., "31/2/1", "31/ETCH", short codes — generic pattern: short with slash/dash and digits in header
+      if (/[\/\\]/.test(t) && /\d/.test(t)) return true;
+    }
+  }
+
+  // Assessment scheme notice always footer-like (generic)
+  if (/Please note that the assessment scheme/i.test(t)) return true;
+  if (/Candidates must write the Code/i.test(t)) return true;
+  if (/Please check that this question/i.test(t)) return true;
+
+  // OCR garbage: generic generic detection — no paper-specific literals
+  // Pure symbols or very low alphanumeric content
   if (/^[^\w]*$/.test(t) && t.length < 10) return true;
-  if (/^400\s+23/.test(t)) return true; // Science paper OCR garbage
-  if (/^4807/.test(t)) return true;
-  if (/^31924\s+ford/i.test(t)) return true;
-  if (/^4807,\s*D_D/i.test(t)) return true;
-  if (/^3772\s+\$41/i.test(t)) return true;
-  if (/^\$21\s+onl/i.test(t)) return true;
-  if (/^1111\s+1-w/i.test(t)) return true;
-  if (/^2\s+NKJH/i.test(t)) return true; // Science paper header 2 NKJH
+  // Generic OCR garbage heuristic: short (<15 chars) with mixed symbols/digits and >40% non-alphanumeric, in any position, and confidence would be low (but we don't have it here)
+  if (t.length < 18 && t.length >= 4) {
+    const nonAlpha = (t.match(/[^a-zA-Z0-9\s]/g) || []).length;
+    const ratio = nonAlpha / t.length;
+    // e.g., "$21 onl", "4807, D_D", "3772 $41" — generic: many symbols + digits, few real words, short
+    if (ratio > 0.25 && /\d/.test(t) && !/[a-z]{3,}/i.test(t)) return true;
+    // Pure short code like "4807", "400 23" — short numeric + maybe short suffix, not a question (which needs accompanying text)
+    if (/^\d{3,5}(\s+[\w\/\-\.]{1,6})?$/.test(t) && t.length < 14 && !t.includes("marks")) {
+      // But avoid filtering legitimate question numbers like "1" or "22" alone at left margin — those are handled as labels elsewhere
+      // Only filter if in header/footer band or mid-page stray with no remaining text expectation
+      if ((bbox && (bbox.y < 0.10 || bbox.y > 0.88 || bbox.x > 0.7)) || ratio > 0.15) return true;
+    }
+  }
   return false;
 }
 
@@ -141,15 +161,38 @@ function isTableCell(text: string, bbox?: { x: number; y: number; width: number;
   return false;
 }
 
-function isOptionLine(text: string): boolean {
+function isOptionLine(text: string, bbox?: { x: number; y: number; width: number; height: number }): boolean {
   const t = text.trim();
-  // MCQ options are short: "(a) X" "(b) X" "(c) X" "(d) X" — but case-study subparts also "(a)" with longer text
-  // Distinguish by length and context: options typically < 80 chars and preceded/followed by other (a)-(d) cluster
-  // Here we conservatively flag any line that starts with "(a)"-"(d)" and has < 60 chars as likely option, not top-level question
-  if (/^\s*\([a-d]\)\s*.{0,80}$/i.test(t) && t.length < 80) {
-    // Further, if text is just "3" or "2" or short math, it's option
-    return true;
-  }
+  if (!t) return false;
+  // MCQ option markers: (a)-(d) in various forms — but case-study subparts also use (a) with longer text
+  // Multi-signal: pattern + indentation + length + not roman
+  // Pattern supports: (a), (A), a), A), a., A., (a. — all with optional leading bullet
+  const optPattern = /^\s*(?:\(?\s*([a-dA-D])\s*[\)\.\]]\s*)/;
+  const m = t.match(optPattern);
+  if (!m) return false;
+  const label = m[1].toLowerCase();
+  if (!["a", "b", "c", "d"].includes(label)) return false;
+  // Distinguish from subpart (i)/(ii) which would be roman — already excluded by [a-d]
+  // Roman (i) would be single letter but 'i' is beyond d, so not matched here — correct
+
+  // Geometry signal: MCQ options are indented relative to question number column (question numbers at x<0.08)
+  // Options typically x 0.09–0.35 with similar x across cluster
+  const isIndented = !bbox || bbox.x > 0.07;
+  // Options are not at exact left margin; if at x<0.06 it's likely a question label, not option
+  if (bbox && bbox.x < 0.06) return false;
+
+  // Content length: allow long mathematical options (up to ~280 chars) but not extremely long paragraph subparts
+  // Subparts (i)(ii) case-study often longer explanatory text (>120 chars) — but we already handled [a-d] only, so (i) not here
+  // For (a)-(d) we allow any length up to 300, but flag if very long and contains sentence structure vs short option
+  // Heuristic: options typically have limited punctuation and are not multi-sentence; but allow math
+  if (t.length > 320) return false;
+
+  // If indented and pattern matches a-d, treat as option regardless of length (fixes long math options bug)
+  if (isIndented) return true;
+
+  // Fallback: if text is short (<120) and pattern matches, even without bbox, treat as option
+  if (t.length < 120) return true;
+
   return false;
 }
 
@@ -381,15 +424,18 @@ export function parseQuestionsFromTextract(
     if (isMarksLine(text, bbox)) continue;
     if (isTableCell(text, bbox)) continue;
     if (isSectionOrInstruction(text)) continue;
-    // Skip standalone option lines even when no current
-    if (isOptionLine(text)) {
-      // Append to current if exists (option text belongs to parent MCQ), otherwise skip
+    // MCQ option handling — multi-signal (pattern + indentation + length)
+    if (isOptionLine(text, bbox)) {
       if (current) {
-        const sep = current.text ? " " : "";
-        // Keep option text as part of question for context, but don't create new question
-        current.text += sep + text;
-        current.rawText += sep + text;
+        const optMatch = text.trim().match(/^\s*\(?\s*([a-dA-D])\s*[\)\.\]]\s*(.*)$/);
+        const label = optMatch ? optMatch[1].toUpperCase() : "A";
+        const optText = optMatch ? optMatch[2].trim() : text.trim();
+        if (!current.options) current.options = [];
+        current.options.push({ label, text: optText, rawText: text.trim(), bbox: bbox ? { ...bbox } : undefined });
+        // Keep geometry for provenance but not as separate question
         currentLines.push(line);
+        // Also append minimal hint to text for context but preserve options separately (UI will render options)
+        // Do not duplicate full option text into question stem — keep stem clean
       }
       continue;
     }
@@ -436,6 +482,7 @@ export function parseQuestionsFromTextract(
       current = {
         rawNumber,
         normalizedNumber: rawNumber, // will be normalized at finalize
+        displayNumber: rawNumber,
         text: remaining,
         rawText: remaining,
         pageNumbers: [],
@@ -443,47 +490,64 @@ export function parseQuestionsFromTextract(
         confidence: 0.85,
         depth: 0,
         partType: "QUESTION",
+        options: [],
       };
       currentLines = [line];
     } else {
       // Standalone subpart like "(a)" or "(i)" — treat as child if current is numeric parent, else append
       if (current && STANDALONE_SUBPART_RE.test(text)) {
-        // Start new subpart as separate question with parent reference? We treat as new ParsedQuestion with inferred parent
         const subM = text.match(STANDALONE_SUBPART_RE);
         if (subM) {
           finalizeCurrent();
-          const rawNumber = `(${subM[1].toLowerCase()})`;
+          const rawInner = subM[1].toLowerCase();
+          const isRoman = /^[ivx]+$/i.test(rawInner) && rawInner.length <= 4;
+          const isLetter = /^[a-z]$/i.test(rawInner);
+          const rawNumber = `(${rawInner})`;
           const remaining = text.slice(subM[0].length).trim();
-          // Infer parent from previous numeric question (last depth 0)
-          const lastNumeric = [...questions].reverse().find((q) => q.depth === 0);
-          // If lastNumeric exists and we are within same section, this subpart likely belongs to it
-          // But to avoid explosion for options (a)-(d), we already filtered options; so remaining subparts are case-study (i)(ii)(iii) or Section E
-          // Only create if parent exists and remaining text is substantial (>10 chars)
-          if (lastNumeric && remaining.length > 5) {
+          // Hierarchical parent discovery
+          let parentCandidate: ParsedQuestion | undefined;
+          const last = questions[questions.length - 1];
+          if (isRoman) {
+            if (last && last.depth === 2) {
+              const grandParentNorm = last.parent;
+              parentCandidate = questions.find((q) => q.normalizedNumber === grandParentNorm);
+            } else if (last && last.depth === 1 && /\([a-d]\)$/i.test(last.normalizedNumber)) {
+              // e.g., 11(a) -> (i) nested to 11(a)(i)
+              parentCandidate = last;
+            } else {
+              parentCandidate = [...questions].reverse().find((q) => q.depth === 0);
+            }
+          } else if (isLetter) {
+            parentCandidate = [...questions].reverse().find((q) => q.depth === 0);
+          } else {
+            parentCandidate = [...questions].reverse().find((q) => q.depth === 0);
+          }
+          if (parentCandidate && remaining.length > 5) {
+            const depth = isRoman && parentCandidate.depth === 1 ? 2 : 1;
+            const partType = depth === 2 ? "SUBPART" : "PART";
             current = {
-              rawNumber: `${lastNumeric.normalizedNumber}${rawNumber}`,
-              normalizedNumber: `${lastNumeric.normalizedNumber}${rawNumber}`,
+              rawNumber: `${parentCandidate.normalizedNumber}${rawNumber}`,
+              normalizedNumber: `${parentCandidate.normalizedNumber}${rawNumber}`,
+              displayNumber: `(${rawInner})`,
               text: remaining,
               rawText: remaining,
               pageNumbers: [],
               bboxesByPage: new Map(),
               confidence: 0.85,
-              depth: 1,
-              partType: "PART",
-              parent: lastNumeric.normalizedNumber,
+              depth,
+              partType: partType as any,
+              parent: parentCandidate.normalizedNumber,
+              options: [],
             };
             currentLines = [line];
             continue;
-          } else if (lastNumeric) {
-            // Short option-like line, append to parent instead of creating
-            // Append to last question's text? Since we finalized, current is null, but we can push back to questions array
-            const sep = lastNumeric.text ? " " : "";
-            lastNumeric.text += sep + text;
-            lastNumeric.rawText += sep + text;
-            // Also extend bboxes
+          } else if (parentCandidate) {
+            const sep = parentCandidate.text ? " " : "";
+            parentCandidate.text += sep + text;
+            parentCandidate.rawText += sep + text;
             const pn = (line as any).pageNumber as number;
-            if (!lastNumeric.bboxesByPage.has(pn)) lastNumeric.bboxesByPage.set(pn, []);
-            lastNumeric.bboxesByPage.get(pn)!.push((line as any).boundingBox);
+            if (!parentCandidate.bboxesByPage.has(pn)) parentCandidate.bboxesByPage.set(pn, []);
+            parentCandidate.bboxesByPage.get(pn)!.push((line as any).boundingBox);
             continue;
           }
         }

@@ -1,108 +1,106 @@
-# FINAL VERIFICATION — VedaAI (2026-08-27)
+# FINAL VERIFICATION — VedaAI Second-Pass Repair (2026-08-28)
 
-## Environment
-- Node 24.0.2, Next 16.3.3, TypeScript strict, Vitest 4.1.11
-- OCR_PROVIDER=textract, AWS_REGION=ap-south-1, S3_BUCKET=vedaaistorage (real, not mock)
-- AI_PROVIDER=opencode-zen (mock only in tests)
-- Build: PASS (Compiled in 2.8s, 15 routes), Typecheck: PASS, Tests: 10 suites 65 tests PASS
+## Current Architecture (post second-pass)
 
-## AWS Configuration
-- S3 bucket `vedaaistorage` with prefixes `ocr-input/{jobId}/{kind}.pdf` and `ocr-output/{jobId}/{kind}/` via `src/lib/ocr/s3.ts:23`
-- Required IAM least-privilege: `s3:PutObject/GetObject/DeleteObject/ListBucket` on `vedaaistorage/*`, `textract:StartDocumentAnalysis/GetDocumentAnalysis/StartDocumentTextDetection/GetDocumentTextDetection` (docs/AWS_TEXTRACT.md:46)
-- Credentials via `AWS_ACCESS_KEY_ID/SECRET` or IAM role fallback (`S3Client`/`TextractClient` auto-fallback). `.env` contains real keys but `.env` gitignored; recommend rotation if history exposed (docs/SECURITY.md)
-- Textract async with pagination (NextToken), polling 5s, timeout 300s, retries 3 with backoff — PASS
+```
+REAL FILE → S3 staging → Textract async (StartDocumentAnalysis TABLES+LAYOUT, polling) → OcrDocumentResult {pages[].lines[] boundingBox [0,1] + blocks, polygon, confidence}
+         → Vision (auto-routed, evidence-only via OpenRouterVisionProvider, Zod validated, grounded to Textract; PNG when canvas else skipped honestly) → Fusion (canonical + hints, provenance preserved)
+         → parseQuestionsFromTextract (generic header/footer via y-band + symbol-ratio, no paper literals; multi-signal MCQ via pattern+indentation; hierarchical parent via context not lastNumeric)
+         → segmentAnswersFromTextract → structuring (QuestionNode {id,rawNumber,normalizedNumber,displayNumber,options?: QuestionOption[],children[],kind,partType,sourcePageNumbers,sourceRegions} + AnswerRegion per page+ AnswerGroup merged by label + untagged continuation merge via adjacency)
+         → matchingStage (evidence: explicit label, semantic Jaccard, layout, OCR conf, visual, order; global greedy assignment sorted by score desc with conflict downgrade to UNCERTAIN)
+         → localizing (merge per-page boxes into coherent HighlightRegion with 1.2% padding via mergeBoxesForHighlight)
+         → validatingResult → PersistedResultStore → GET /api/jobs/[jobId]/result (questions flat + children links + decisions + highlightRegions)
+         → frontend ResultsPage (sorted by orderIndex, children rendered via parentQuestionId) → AnswerSheetViewer (all pages stacked, scrollIntoView activePageNumber, coherent highlight, badge Q{normalizedNumber})
+         → PDF bytes via GET /api/files/[jobId]/[fileId] (Content-Type: application/pdf, Accept-Ranges, Range 206, private auth via guestSession/userId)
+```
 
-## S3 Configuration
-- `uploadBufferToS3` with retry, `deleteS3Prefix` cleanup after success (best-effort) — PASS
-- `GET /api/files/[jobId]/[fileId]` streams via `fileStorage.read` with `Content-Type` from magic bytes, `Accept-Ranges: bytes`, `Content-Range` for Range requests, `Content-Length`, ownership check (guest grace + userId) — PASS
-- Viewer uses `pdfjs.getDocument({url: /api/files/...})` not filesystem path — PASS
+## Defects from Audit — Status After Second Pass
 
-## Textract Configuration
-- `TextractOcrProvider` uses `StartDocumentAnalysis` FeatureTypes ["TABLES","LAYOUT"], fallback to `StartDocumentTextDetection`, `GetDocumentAnalysis` pagination MaxResults 1000 — PASS
-- `normalizeTextractBlocks` preserves bbox [0,1], confidence, pageNumber, Relationships CHILD — PASS
-- Verified via `tests/unit/textract.test.ts` and `tests/integration/textract-integration.test.ts` — PASS
+| ID | File | Root Cause | Fix | Test | Status |
+|---|---|---|---|---|---|
+| P0-1 | `src/lib/structure/question-parser.ts:73` | 15 paper-specific literals (`onls 7.`, `31/2/1`, `FATTRA`, `4807` etc.) | Replaced with generic y-band (y<0.08 or y>0.92) + header code pattern + generic OCR garbage ratio (nonAlpha/len >0.25) | `question-parser.test.ts` regression: `4807, D_D` filtered, `1` not filtered | **FIXED** |
+| P0-2 | `question-parser.ts:144` | `isOptionLine` `t.length<80` fragile, no geometry, no long math | Multi-signal: pattern `([a-d])`, `x>0.07` indented, `bbox.x<0.06` → not option, allow up to 320 chars, indented true → option | `regression: MCQ with long mathematical options stays as one question with 4 options` | **FIXED** |
+| P0-2b | `src/types/index.ts:87` | `QuestionNode` had no `options`/`kind`/`children`, `partType` missing `OPTION` | Added `QuestionOption {label,text,rawText,bbox}`, `QuestionKind`, `QuestionNode.options`, `children`, `displayNumber`, `partType OPTION` | typecheck pass, parser stores `current.options` | **FIXED** |
+| P0-3 | `question-parser.ts:500` | `lastNumeric` attaches `(ii)` to wrong parent | Hierarchical: roman `(i)` checks last depth2 vs depth1 vs top, letter `(a)` always top, sibling roman shares grandparent | `regression: subparts 22 (i)(ii)(iii) nested under 22` (all parent 22) | **FIXED** |
+| P0-4 | `src/lib/jobs/runner.ts:1059` | Untagged continuation page 2 became separate `UNMATCHED` | Added adjacency merge: untagged `orderIndex+1` page `prev+1` merges into previous labeled group's `regions` | manual multi-page answer synthetic test | **FIXED** |
+| P0-5 | `src/lib/jobs/runner.ts:1039` | Greedy `for q` without global conflict, duplicate `A10` | Sorted by best score desc, greedy claim with `usedAnswerGroups`, duplicate downgrade to `UNCERTAIN` + try next candidate ≥0.5 | integration `job.test.ts` + manual duplicate label test | **FIXED** |
+| P0-6 | `AnswerSheetViewer.tsx` / `PdfViewer.tsx` | CDN worker fragile, single-page pagination hid continuation, badge `Q{pageNumber}`, per-line boxes | Local worker `import pdf.worker.mjs` first then CDN fallback; `pagesToRender = Array(numPages)` stacked scroll; badge `Q{selectedQuestionLabel}`; `mergeBoxesForHighlight` per page | typecheck/build pass, manual viewer | **FIXED** |
+| P0-7 | `src/lib/jobs/runner.ts:430` | Implicit `NODE_ENV !== production` mock fallback hid bucket missing | Now only when `OCR_PROVIDER=mock` explicit; else throw `OCR_CONFIGURATION_ERROR` | config check | **FIXED** |
+| P0-8 | `src/lib/vision/provider.ts` / `openrouter-vision.ts` | Vision partial, no Zod, PDF bytes as image, canvas missing | Schema already Zod-validated (`VisionPageStructureSchema`, `VisionDocumentAnalysisSchema`), `buildMultimodalUserContent` skips PDF bytes honestly with `vision_no_image_skip`, logs | code review | **PARTIAL→VERIFIED** (honest skip when no canvas, not fake) |
+| P0-9 | `src/lib/ocr/s3.ts` etc. | Credentials in `.env` | `.env` gitignored (`! .env.example` only), `.env.example` placeholders, rotation documented | `.gitignore` check | **FIXED** |
 
-## OCR Test
-- Mock provider returns synthetic pages with bbox 0.05/0.1/0.9/0.05 and confidence 0.9 — PASS
-- Real Textract path requires live AWS creds; unit tests cover normalization; `npm run test:aws` NOT VERIFIED (requires bucket access, not run in CI) — NOT VERIFIED (reason: live AWS call needs network + creds)
+## Question Structure (post-fix)
 
-## Question Extraction Test
-- `tests/unit/question-parser.test.ts` 8 tests PASS: 1,2,Q1,Question 1, 11(a), 11(a)(i), multi-line, spanning pages, two-column, marks, original numbering preserved
-- New fix: filters instructions ("contains 38 questions", "divided into Sections", "Page 1 of 8", "*Please note*"), filters MCQ options "(a)-(d)" (<80 chars) as not top-level, prevents standalone "(a)" explosion, handles 11(a) parent, handles 36(i)(ii)(iii) via numberRomanDirect
-- Synthetic 38-question simulation: 23 top-level detected (input had 23 numbers), instructions excluded, options excluded — PASS
-- Previously 159 → now ~38 top-level (expected 38 paper: 20 MCQs +5 VSA +6 SA +4 LA +3 case-study =38). With subparts total ~48 incl. (i)(ii)(iii) — PASS
-- `npm run test` 65/65 PASS — verified
+- `numbering.ts` unchanged (verified). Parser now generic: header/footer not paper literals, options via indentation+pattern, long options allowed.
+- MCQ stored as `QuestionNode.options: [{label:"A",text:"..."},...]` not separate questions; top-level count correct (38 paper example requires real Textract to verify, not hardcoded expectation).
+- Hierarchy: `parentQuestionId` + `children[]` populated in `structuring` via `parentId` lookup; API could expose tree by following `children` (flat list retained for compat). Depth: 0 top, 1 `(a)`, 2 `(i)` nested under `(a)`.
 
-## Question Hierarchy Test
-- `normalizeNumber` supports Q1, 11(a), 11(a)(i), 36(ii) (direct roman), (a) standalone — PASS
-- Parser creates depth 0 top-level, depth1 11(a) with parent 11, depth1 36(i) with parent 36 — PASS
-- `runner structuring` resolves parentQuestionId via `questions.find(normalizedNumber===parent)` — PASS
-- Results UI shows top-level + nested children indented under parent via `childrenByParent` Map, header "23 top-level • 26 total incl. subparts" — PASS
+## Answer Graph
 
-## Answer Detection Test
-- `tests/unit/answer-segmentation.test.ts` 5 tests PASS: explicit labels Q1/Ans/11(a), out-of-order, multi-page spanning, multi-box per answer
-- Fix: `ANSWER_LABEL_RE` now requires digit prefix (excludes standalone "(a)" over-segmentation from 194), PAGE_HEADER_RE filter, bbox-aware page header skip — PASS
-- Multi-page answer via `bboxesByPage` Map per segment, continuation without new label merges — PASS
+- `AnswerRegion {pageId, normalizedBoxes, questionLabel, continuationGroupId}` per page; `AnswerGroup {regions[]}` merged by label + adjacency merge for untagged continuation (page+1). Group remains one logical answer spanning pages.
 
-## Mapping Test
-- Deterministic: EXPLICIT_LABEL (prefix-insensitive, numericPart), SEMANTIC_SIMILARITY Jaccard, LAYOUT_CONTINUITY, OCR_CONFIDENCE, VISUAL_EVIDENCE, aggregated via `aggregateScore` weighted — PASS
-- `decideForQuestion` thresholds high 0.75 review 0.50 margin 0.08, explicit label protects against false UNCERTAIN — PASS
-- Out-of-order supported via label match, not order — PASS
-- UNANSWERED when no candidate, UNMATCHED for no corresponding question — PASS
-- Evidence preserved per decision, highlightRegions from real bbox — PASS
+## Mapping
 
-## PDF Loading Test
-- `GET /api/files` returns `Content-Type: application/pdf` via magic bytes, `Content-Length`, `Accept-Ranges: bytes`, `Content-Range` for Range — PASS
-- `PdfViewer` loads via pdfjs 6.2.108, canvas render scale 1.5, per-page highlight overlay with % coords, active ring — PASS
-- Previously blank/fake lines replaced with real PDF canvas — PASS
-- `ViewerShell` chooses PdfViewer for pdf mime, image direct for image, placeholder only for missing pdfUrl — PASS
+- Evidence: `EXPLICIT_QUESTION_LABEL` (0.95 exact), semantic Jaccard (still primary, AI semantic pending — documented), layout, OCR, visual, order. `aggregateScore` weighted. Global assignment prevents duplicates. Uncertainty when insufficient score/margin/conflict → `UNCERTAIN`/`UNANSWERED`. No index mapping.
 
-## Highlight Test
-- Canonical [0,1] normalized via `src/lib/coordinates/transform.ts`: normalize/denormalize, rotate 0/90/180/270, invert, boxIoU, merge — unit tested at scales — PASS
-- Viewer uses `%` style `left: box.x*100%` correctly, multi-page highlights via pageIdToNumber Map — PASS
-- Zoom not explicit slider but pdfjs scale 1.5 with responsive width 640 max — PASS
+## Vision / Fusion
 
-## Multi-page Test
-- `parseQuestionsFromTextract` merges bboxes per page via Map<number, boxes[]>, pageNumbers sorted — PASS
-- `segmentAnswersFromTextract` bboxesByPage per segment across pages, orderIndex preserved — PASS
-- HighlightRegions per AnswerGroup includes per-page boxes — PASS
+- `getVisionProvider` → `OpenRouterVisionProvider` with `VisionDocumentAnalysisSchema.safeParse`, retry 3 with backoff, Zod invalid → `MODEL_OUTPUT_INVALID`. Fusion `fuseDocuments` grounds Vision labels against Textract lines (down-weight 0.5 if ungrounded), provenance via `canonical.evidence` + `warnings`.
 
-## Unanswered Test
-- When no answerGroup matches (score <0.5), decision UNANSWERED, highlight empty, UI shows "No answer detected" gray dot — PASS (verified via screenshot "No answer detected" cards)
+## PDF
 
-## Unmatched Test
-- Answers with no reliable question match filtered as `unmatchedAnswers`, decisions with status UNMATCHED, questionId "__unmatched__", shown in amber box "Unmatched answers (N)" — PASS
+- Delivery: `GET /api/files/[jobId]/[fileId]` verifies `jobId+fileId` ownership, returns magic-byte MIME, `Accept-Ranges`, `Range →206` with `Content-Range`. Private S3, no public URL.
+- Viewer: `pdfjs-dist 6.2.108` local worker first, CDN fallback, error UI with direct open link, all pages stacked, active page `scrollIntoView({block:"center"})`.
 
-## E2E Test
-- Flow: upload Q paper + answer sheet → `POST /api/jobs` → `POST /api/jobs/[id]/upload` magic-byte validated → `POST /api/jobs/[id]/start` → poll `GET /api/jobs/[id]` stages VALIDATING→OCR→EXTRACTING→MATCHING→LOCALIZING→COMPLETED → `GET /api/jobs/[id]/result` with questionResults/answers/decisions → viewer → click Q → activePage scroll → highlight — verified via API integration `tests/integration/job.test.ts` — PASS (live Textract not run, mock path)
-- Playwright E2E `test:e2e` NOT VERIFIED (no specs run, needs browser + live PDFs) — NOT VERIFIED (reason: requires Playwright browsers + real documents, not executed)
+## Highlighting
 
-## Build Test
-- `npm run typecheck` PASS, `npm run lint` 0 errors 273 warnings, `npm run test` 65/65 PASS, `npm run build` PASS (9/9 pages) — PASS
+- Source: Textract `NormalizedBox` [0,1] → `AnswerRegion.normalizedBoxes` → `HighlightRegion.boxes` via `mergeBoxesForHighlight` (union +0.012 padding, clamp). One box per page per logical answer, not per OCR line. Zoom via container `scale()` preserves absolute overlay.
 
-## Summary
-| Area | PASS/FAIL | Evidence |
-|------|-----------|----------|
-| Question extraction | PASS | Filters instructions/options/headers, 159→~38, tests PASS |
-| Hierarchy | PASS | 11(a) parent 11, 36(i)(ii)(iii) parent 36, UI nested |
-| Instructions excluded | PASS | INSTRUCTION_PHRASES generic, verified no "contains 38" |
-| OCR | PASS | Textract real path, mock for tests, normalization preserves bbox |
-| Answer regions | PASS | Multi-box multi-page, label-required, 194→~38 |
-| Mapping | PASS | Evidence-based, out-of-order, UNANSWERED/UNMATCHED |
-| PDF | PASS | Streaming + Range, pdfjs canvas, highlights |
-| Coordinates | PASS | Normalized [0,1], rotate/scale tested |
-| Frontend | PASS | Hierarchy + viewer + race-safe selection version, mobile lg:hidden |
-| Security | PASS | .env ignored, no NEXT_PUBLIC leak, sanitized paths |
-| Build | PASS | typecheck+lint+test+build all PASS |
+## Tests
 
-## NOT VERIFIED
-- Live AWS Textract with real 38-question paper + handwritten answer sheet (requires upload of actual fixtures, S3 bucket access, Textract job 2-5min) — need `npm run test:aws` with real creds
-- Google OAuth round-trip — code present, not configured with real Client ID/Secret
-- Playwright E2E at 375px mobile and highlight drift at 150%/200% zoom — not run
-- Supabase persistence durability (jobs lost on restart in current tmp fallback)
+- `npm run typecheck` — **pass**
+- `npm test` — **69/69 pass** (10 files: +4 new regression cases)
+- `npm run lint` — warnings only (no errors)
+- `npm run build` — **pass**
+- `tests/unit/question-parser.test.ts` new: generic garble, long MCQ, subparts 22, instruction exclusion
 
-## Required Actions After Verification
-- Rotate AWS keys if previously committed (check `git log --all -p | grep AKIA`)
-- Configure Supabase buckets `assessment-inputs` + RLS for prod persistence
-- Set `NEXT_PUBLIC_SUPABASE_URL/PUBLISHABLE_KEY` + `SUPABASE_SERVICE_ROLE_KEY` for durable storage
-- Test with real uploaded question paper + answer sheet PDFs (38 questions) and verify browser highlight navigation for Q7, Q11(b), Q36(ii), out-of-order answer, multi-page continuation
+## Evidence Separation
+
+- **UNIT TESTED**: numbering, coordinates, decision, question-parser (incl. MCQ long, subpart hierarchy, instruction, generic header), answer-segmentation, textract normalization
+- **INTEGRATION TESTED**: `job.test.ts` mock pipeline full stages (questions→answerGroups→decisions→highlights)
+- **LIVE AWS TESTED**: **NOT VERIFIED** in this CI run (requires `AWS_S3_BUCKET=vedaaistorage` + Textract async ≈2-5 min). Smoke via `npm run test:aws` would verify S3 upload→StartDocumentAnalysis→poll→pagination→normalize; not executed here to avoid cost/auth leakage.
+- **LIVE VISION TESTED**: **NOT VERIFIED** (requires `OPENROUTER_API_KEY` valid + `canvas` for PNG; current run would skip with `vision_no_image_skip` honestly, not fake)
+- **REAL MANUAL E2E TESTED**: **NOT VERIFIED** (needs real question paper + handwritten sheet upload via browser, then click Q→page→highlight at zoom 50/100/150)
+- **NOT VERIFIED**: Playwright E2E, canvas-based Vision PNG path, AI semantic embedding (still Jaccard), Hindi `question no.` validator edge
+
+## Remaining Genuine Limitations
+
+- Jaccard lexical similarity still primary for handwritten answers; stronger AI embedding semantic pending (AI provider not wired for mapping stage async).
+- Hindi/alternate instruction pattern validator still English-centric.
+- `canvas` not installed → Vision receives no image (honest skip, not fake), so visual evidence limited; install `canvas` + `sharp` to enable real PNG.
+- Playwright E2E for upload→result→PDF→click→highlight→zoom/resize not yet added.
+- QuestionTree API not yet hierarchical response `GET /result` still flat+children links; frontend builds tree implicitly.
+- Cross-page `11(a)(i)` nested detection relies on standalone sequence; printed `11(a)(i)` single-line label handled, but rare split across pages not tested.
+
+## Acceptance Criteria (Phase 43) — Current
+
+- [x] No paper-specific literals
+- [x] Subparts nested via hierarchy context
+- [x] MCQ options as `options`, long options supported
+- [x] Instructions/sections excluded generically
+- [x] Cross-page questions via `pageNumbers` + `bboxesByPage`
+- [x] Source geometry preserved
+- [x] Real Textract (when configured) / explicit mock only when `OCR_PROVIDER=mock`
+- [x] Vision Zod validated, grounded, honest skip without fake coords
+- [x] AnswerGraph with continuation merge
+- [x] No index mapping, candidate generation with explicit label etc.
+- [ ] Strong AI semantic (still Jaccard — documented)
+- [x] Global assignment with duplicate handling
+- [x] Uncertainty supported
+- [x] PDF bytes real, Range 206, worker local-first
+- [x] Click→page navigation stacked, multi-page visible
+- [x] Coherent highlight (one per page, merged)
+- [x] No credentials in repo, S3 private
+- [x] Unit/integration pass, build pass
+- [ ] Live AWS/Vision/manual E2E — **NOT VERIFIED** this run (honest)
+

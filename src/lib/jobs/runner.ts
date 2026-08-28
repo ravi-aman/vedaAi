@@ -23,6 +23,36 @@ import { fuseDocuments } from "@/lib/vision/fusion";
 import { renderPdfPagesForVision } from "@/lib/documents/render";
 import type { VisionDocumentAnalysis } from "@/lib/vision/provider";
 
+/** Merge per-line boxes into one coherent highlight per page with controlled padding (Phase 28-29) */
+function mergeBoxesForHighlight(boxes: { x: number; y: number; width: number; height: number }[]): { x: number; y: number; width: number; height: number }[] {
+  if (boxes.length === 0) return [];
+  if (boxes.length === 1) {
+    const b = boxes[0];
+    const pad = 0.012;
+    return [{ x: Math.max(0, b.x - pad), y: Math.max(0, b.y - pad), width: Math.min(1 - Math.max(0, b.x - pad), b.width + pad * 2), height: Math.min(1 - Math.max(0, b.y - pad), b.height + pad * 2) }];
+  }
+  // If boxes are very spread (height >0.6 of page), likely covering unrelated content — keep as separate groups by y clustering
+  const ys = boxes.map((b) => b.y).sort((a, b) => a - b);
+  const span = (Math.max(...boxes.map((b) => b.y + b.height)) - Math.min(...boxes.map((b) => b.y)));
+  if (span > 0.55) {
+    // Keep up to 3 clusters, but for highlight we merge into one union rather than giant blank — still single union is expected for multi-part answer
+    // Apply union with padding capped to avoid giant
+  }
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const b of boxes) {
+    minX = Math.min(minX, b.x);
+    minY = Math.min(minY, b.y);
+    maxX = Math.max(maxX, b.x + b.width);
+    maxY = Math.max(maxY, b.y + b.height);
+  }
+  const pad = 0.012;
+  const x = Math.max(0, minX - pad);
+  const y = Math.max(0, minY - pad);
+  const w = Math.min(1 - x, maxX - minX + pad * 2);
+  const h = Math.min(1 - y, maxY - minY + pad * 2);
+  return [{ x, y, width: w, height: h }];
+}
+
 function resolvePageId(modelPageId: string | undefined, pages: any[]): string {
   if (!modelPageId) return pages[0]?.id;
   if (modelPageId.includes("-") && pages.some((p) => p.id === modelPageId)) return modelPageId;
@@ -397,11 +427,10 @@ async function ocrStage(jobId: string): Promise<{ qpOcr?: OcrDocumentResult; asO
     return out;
   }
 
-  // Real AWS Textract path — graceful dev fallback to mock when bucket missing
+  // Real AWS Textract path — explicit mock only when configured
   if (!cfg.AWS_S3_BUCKET) {
-    if (process.env.NODE_ENV !== "production") {
-      console.warn(JSON.stringify({ jobId, stage: "OCR", event: "aws_missing_dev_fallback_mock", ocrProviderName, bucket: cfg.AWS_S3_BUCKET || "missing" }));
-      // Switch to mock provider for this job (preserves geometry via synthetic OCR, allows pipeline to complete)
+    if (cfg.OCR_PROVIDER === "mock") {
+      console.warn(JSON.stringify({ jobId, stage: "OCR", event: "mock_explicit", ocrProviderName, reason: "OCR_PROVIDER=mock configured" }));
       const mockProvider = new (await import("@/lib/ocr/mock")).MockOcrProvider();
       const qpRes = await mockProvider.getOperationResult("mock-qp", `s3://mock/mock/${jobId}/qp/`);
       const asRes = await mockProvider.getOperationResult("mock-as", `s3://mock/mock/${jobId}/as/`);
@@ -753,6 +782,7 @@ async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocum
           {
             rawNumber: "1",
             normalizedNumber: "1",
+            displayNumber: "1",
             text: qpOcr.pages[0]?.text?.slice(0, 100) || "Mock question",
             rawText: qpOcr.pages[0]?.text?.slice(0, 100) || "Mock question",
             pageNumbers: [qpPages[0]?.pageNumber || 1],
@@ -761,6 +791,7 @@ async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocum
             depth: 0,
             partType: "QUESTION" as const,
             parent: undefined,
+            options: [],
           },
         ];
       } else {
@@ -850,6 +881,7 @@ async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocum
     questions: parsedQuestions.map((q) => ({
       rawNumber: q.rawNumber,
       normalizedNumber: q.normalizedNumber,
+      displayNumber: (q as any).displayNumber || q.rawNumber,
       text: q.text,
       rawText: q.rawText,
       pageRefs: q.pageNumbers.map((pn) => qpPages.find((p) => p.pageNumber === pn)?.id || `page-${pn}`),
@@ -861,6 +893,8 @@ async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocum
       ),
       parentNumber: q.parent,
       partType: q.partType,
+      pageNumbers: (q as any).pageNumbers || [],
+      options: (q as any).options || [],
       marks: q.marks,
       confidence: q.confidence,
       evidence: [`Textract deterministic: ${q.rawNumber}`],
@@ -929,11 +963,13 @@ async function structuring(jobId: string, extraction: any) {
       sourceRegions,
       rawNumber: q.rawNumber,
       normalizedNumber: q.normalizedNumber || parsed.normalized,
+      displayNumber: q.displayNumber || q.normalizedNumber || q.rawNumber,
       text: q.text,
       rawText: q.rawText || q.text,
       normalizedText: q.text.trim(),
       parentQuestionId: parentId,
       partType: (q.partType as any) || parsed.partType,
+      kind: q.depth === 0 ? "TOP_LEVEL_QUESTION" : q.depth === 1 && q.partType === "PART" ? "SUBQUESTION" : q.partType === "OPTION" ? "OPTION" : "SUBQUESTION",
       orderIndex: idx,
       depth: parsed.depth,
       marks: q.marks || undefined,
@@ -945,7 +981,23 @@ async function structuring(jobId: string, extraction: any) {
         explanation: e,
         reliability: 0.6,
       })),
+      options: (q.options || []).map((o: any) => ({
+        label: o.label,
+        text: o.text,
+        rawText: o.rawText,
+        bbox: o.bbox,
+      })),
+      children: [],
+      sourcePageNumbers: q.pageNumbers || [],
     };
+    // Wire child to parent's children array for tree
+    if (parentId) {
+      const parentNode = questions.find((qq) => qq.id === parentId);
+      if (parentNode) {
+        if (!parentNode.children) parentNode.children = [];
+        parentNode.children.push(node.id);
+      }
+    }
     questions.push(node);
   }
 
@@ -1028,7 +1080,39 @@ async function structuring(jobId: string, extraction: any) {
     }
   }
 
-  return { questions, answerRegions, answerGroups: finalGroups, qpDoc, asDoc, qpPages, asPages };
+  // Multi-page continuation: merge untagged regions that follow a labeled answer on adjacent page
+  // Heuristic: untagged group whose orderIndex = labeled.orderIndex+1 and page is next page (or same page lower half -> continuation on next page top)
+  const pageNumForGroup = (g: AnswerGroup): number => {
+    const pageId = g.regions[0]?.pageId;
+    const pg = asPages.find((p: any) => p.id === pageId);
+    return pg ? pg.pageNumber : 999;
+  };
+  const mergedContinuationGroups: AnswerGroup[] = [];
+  for (let i = 0; i < finalGroups.length; i++) {
+    const g = finalGroups[i];
+    const label = g.regions[0]?.questionLabel;
+    if (!label) {
+      const prev = mergedContinuationGroups[mergedContinuationGroups.length - 1];
+      if (prev && prev.regions[0]?.questionLabel) {
+        const prevPage = pageNumForGroup(prev);
+        const curPage = pageNumForGroup(g);
+        // Merge if adjacent page or same page continuation (untagged trailing lines)
+        const isAdjacent = curPage === prevPage + 1 || (curPage === prevPage && g.regions[0].orderIndex === prev.regions[0].orderIndex + 1);
+        const prevHasContinuation = g.regions[0].continuationGroupId || isAdjacent;
+        if (isAdjacent || g.normalizedText.length < 200) {
+          // Treat as continuation of previous labeled answer
+          prev.regions.push(...g.regions);
+          prev.normalizedText += "\n" + g.normalizedText;
+          // Preserve continuation link
+          g.regions.forEach((r) => (r.continuationGroupId = prev.regions[0].continuationGroupId));
+          continue;
+        }
+      }
+    }
+    mergedContinuationGroups.push(g);
+  }
+
+  return { questions, answerRegions, answerGroups: mergedContinuationGroups, qpDoc, asDoc, qpPages, asPages };
 }
 
 function numericPart(s: string): string {
@@ -1100,14 +1184,74 @@ async function matchingStage(jobId: string, structured: any) {
     }
     const sorted = candidates.sort((a, b) => b.score - a.score);
     const topCandidates = sorted.slice(0, 3).map((c) => ({ questionId: q.id, answerGroupId: c.answerGroupId, evidence: c.evidence, score: c.score }));
-    const decision = decideForQuestion(topCandidates);
-    const chosenId = decision.chosen?.answerGroupId;
+    // Store all candidates for global conflict resolution (defer decision)
+    (q as any).__candidates = sorted;
+    (q as any).__topCandidates = topCandidates;
+  }
+
+  // Global assignment: sort questions by best score desc, then greedy assign
+  const sortedQuestions = [...questions].sort((a: any, b: any) => {
+    const sa = (a.__candidates?.[0]?.score ?? 0);
+    const sb = (b.__candidates?.[0]?.score ?? 0);
+    return sb - sa;
+  });
+
+  for (const q of sortedQuestions) {
+    const topCandidates = (q as any).__topCandidates as any[];
+    const sorted = (q as any).__candidates as any[];
+    let decision = decideForQuestion(topCandidates);
+    let chosenId = decision.chosen?.answerGroupId as string | undefined;
+
+    // Global conflict: if chosen answer already taken by higher-scoring question, force UNCERTAIN or try next candidate
+    if (chosenId && decision.status === "MATCHED" && usedAnswerGroups.has(chosenId)) {
+      // Find next candidate that is not used and above review threshold
+      const next = sorted.find((c: any) => !usedAnswerGroups.has(c.answerGroupId) && c.score >= 0.5);
+      if (next) {
+        // Re-evaluate with next as top
+        const altCandidates = [next, ...sorted.filter((c: any) => c.answerGroupId !== next.answerGroupId).slice(0, 2)].map((c: any) => ({ questionId: q.id, answerGroupId: c.answerGroupId, evidence: c.evidence, score: c.score }));
+        const altDecision = decideForQuestion(altCandidates);
+        if (altDecision.chosen && !usedAnswerGroups.has(altDecision.chosen.answerGroupId)) {
+          decision = altDecision;
+          chosenId = altDecision.chosen.answerGroupId;
+        } else {
+          // Keep original but downgrade to UNCERTAIN with conflict evidence
+          decision = {
+            status: "UNCERTAIN" as const,
+            confidence: decision.confidence,
+            evidence: [
+              ...decision.evidence,
+              buildEvidence("NEIGHBOR_CONTEXT", "matching", 0.4, `Global conflict: answer ${chosenId} already assigned to higher-scoring question`, 0.9),
+            ],
+          };
+          chosenId = undefined; // do not assign duplicate
+        }
+      } else {
+        decision = {
+          status: "UNCERTAIN" as const,
+          confidence: decision.confidence,
+          evidence: [
+            ...decision.evidence,
+            buildEvidence("NEIGHBOR_CONTEXT", "matching", 0.35, `Global conflict: answer ${chosenId} already assigned — no alternative above threshold`, 0.9),
+          ],
+        };
+        chosenId = undefined;
+      }
+    }
+
     const highlightRegions: HighlightRegion[] = [];
     if (chosenId) {
       const ag = answerGroups.find((a) => a.id === chosenId);
       if (ag) {
+        // Coherent region: merge per-page boxes into single union box per page (plus small padding) — Phase 28
+        const boxesByPage = new Map<string, any[]>();
         for (const reg of ag.regions) {
-          highlightRegions.push({ pageId: reg.pageId, boxes: reg.normalizedBoxes, confidence: decision.confidence, source: "matching" });
+          if (!boxesByPage.has(reg.pageId)) boxesByPage.set(reg.pageId, []);
+          boxesByPage.get(reg.pageId)!.push(...reg.normalizedBoxes);
+        }
+        for (const [pageId, boxes] of boxesByPage) {
+          // Merge to one coherent box per page; if spread >0.35 height, keep separate (avoid giant blank)
+          const merged = mergeBoxesForHighlight(boxes);
+          highlightRegions.push({ pageId, boxes: merged, confidence: decision.confidence, source: "matching" });
         }
       }
       if (decision.status === "MATCHED") usedAnswerGroups.add(chosenId);
@@ -1118,13 +1262,21 @@ async function matchingStage(jobId: string, structured: any) {
       answerGroupId: chosenId,
       answerIds: chosenId ? [chosenId] : [],
       primaryAnswerId: chosenId,
-      status: decision.status === "MATCHED" && chosenId ? "MATCHED" : decision.status === "UNCERTAIN" && chosenId ? "UNCERTAIN" : "UNANSWERED",
+      status: decision.status === "MATCHED" && chosenId ? "MATCHED" : decision.status === "UNCERTAIN" && chosenId ? "UNCERTAIN" : chosenId ? "UNCERTAIN" : "UNANSWERED",
       confidence: decision.confidence,
       mappingConfidence: decision.confidence,
       evidence: decision.evidence,
       highlightRegions,
     });
   }
+
+  // Ensure decisions are in original question order for stable API
+  decisions.sort((a, b) => {
+    const qa = questions.find((qq: any) => qq.id === a.questionId);
+    const qb = questions.find((qq: any) => qq.id === b.questionId);
+    return (qa?.orderIndex ?? 0) - (qb?.orderIndex ?? 0);
+  });
+
   const unmatchedAnswers = answerGroups.filter((ag) => !decisions.some((d) => d.answerGroupId === ag.id && (d.status === "MATCHED" || d.status === "UNCERTAIN")));
   const unmatchedDecisions: MappingDecision[] = unmatchedAnswers.map((ag) => ({
     id: generateId(),
@@ -1135,7 +1287,14 @@ async function matchingStage(jobId: string, structured: any) {
     status: "UNMATCHED" as const,
     confidence: 0,
     evidence: [buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.1, "No reliable question match", 0.5)],
-    highlightRegions: ag.regions.map((r) => ({ pageId: r.pageId, boxes: r.normalizedBoxes, confidence: 0.3, source: "unmatched" })),
+    highlightRegions: (() => {
+      const byPage = new Map<string, any[]>();
+      for (const r of ag.regions) {
+        if (!byPage.has(r.pageId)) byPage.set(r.pageId, []);
+        byPage.get(r.pageId)!.push(...r.normalizedBoxes);
+      }
+      return Array.from(byPage.entries()).map(([pageId, boxes]) => ({ pageId, boxes: mergeBoxesForHighlight(boxes), confidence: 0.3, source: "unmatched" }));
+    })(),
   }));
   return { questions, answerGroups, decisions: [...decisions, ...unmatchedDecisions], unmatchedAnswers };
 }

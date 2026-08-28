@@ -6,6 +6,7 @@ export function AnswerSheetViewer({
   pages,
   highlights,
   selectedQuestionId,
+  selectedQuestionLabel,
   activePageId,
   pdfUrl,
   mime,
@@ -13,6 +14,7 @@ export function AnswerSheetViewer({
   pages: DocumentPage[];
   highlights: HighlightRegion[];
   selectedQuestionId?: string;
+  selectedQuestionLabel?: string;
   activePageId?: string;
   pdfUrl?: string;
   mime?: string;
@@ -119,12 +121,7 @@ export function AnswerSheetViewer({
                           className="absolute -top-2 -left-1 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none"
                           style={{ background: HIGHLIGHT_TAG_BG }}
                         >
-                          {(() => {
-                            const num = pageIdToNumber.get(hr.pageId) ?? currentPage;
-                            const label = selectedQuestionId ? `Q${num}` : "Q2";
-                            // Try to get normalizedNumber from highlight context fallback
-                            return label;
-                          })()}
+                          {selectedQuestionLabel ? `Q${selectedQuestionLabel}` : `Q${pageIdToNumber.get(hr.pageId) ?? currentPage}`}
                         </span>
                       )}
                     </div>
@@ -144,6 +141,7 @@ export function AnswerSheetViewer({
             scale={scale}
             flashKey={flashKey}
             totalPages={totalPages}
+            selectedQuestionLabel={selectedQuestionLabel}
           />
         ) : (
           <>
@@ -196,7 +194,7 @@ export function AnswerSheetViewer({
                         >
                           {isActive && idx === 0 && bi === 0 && (
                             <span className="absolute -top-2 -left-1 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: HIGHLIGHT_TAG_BG }}>
-                              Q{page.pageNumber}
+                              {selectedQuestionLabel ? `Q${selectedQuestionLabel}` : `Q${page.pageNumber}`}
                             </span>
                           )}
                         </div>
@@ -222,6 +220,7 @@ function PdfContent({
   scale,
   flashKey,
   totalPages,
+  selectedQuestionLabel,
 }: {
   pdfUrl: string;
   pages: DocumentPage[];
@@ -231,6 +230,7 @@ function PdfContent({
   scale: number;
   flashKey: number;
   totalPages: number;
+  selectedQuestionLabel?: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [numPages, setNumPages] = useState(0);
@@ -259,10 +259,17 @@ function PdfContent({
         pdfRef.current = null;
         const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
         try {
-          const version = pdfjs.version || "6.2.108";
-          pdfjs.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/legacy/build/pdf.worker.mjs`;
+          // Try local worker first (bundled), fallback to CDN only if local fails
+          // @ts-ignore pdfjs worker has no declaration
+          await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
+          pdfjs.GlobalWorkerOptions.workerSrc = `pdfjs-dist/legacy/build/pdf.worker.mjs`;
         } catch {
-          pdfjs.GlobalWorkerOptions.workerSrc = "";
+          try {
+            const version = pdfjs.version || "6.2.108";
+            pdfjs.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/legacy/build/pdf.worker.mjs`;
+          } catch {
+            pdfjs.GlobalWorkerOptions.workerSrc = "";
+          }
         }
         const loadingTask = pdfjs.getDocument({ url: pdfUrl, withCredentials: true, verbosity: 0, isEvalSupported: false, useWorkerFetch: true, disableFontFace: true });
         pdfDoc = await loadingTask.promise;
@@ -349,8 +356,8 @@ function PdfContent({
     );
   }
 
-  // For paginated view, show only currentPage; for scroll view show all. Use pagination: show currentPage only
-  const pagesToRender = [currentPage];
+  // Stack all pages with scroll; pagination controls update currentPage but all pages remain visible for continuation highlights
+  const pagesToRender = Array.from({ length: numPages || totalPages }, (_, i) => i + 1);
   return (
     <div ref={containerRef} className="flex flex-col items-center gap-6 w-full">
       {pagesToRender.map((pageNumber) => {
@@ -379,7 +386,7 @@ function PdfContent({
                   >
                     {hi === 0 && bi === 0 && (
                       <span className="absolute -top-2 -left-1 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "#34C759" }}>
-                        Q{pageNumber}
+                        {selectedQuestionLabel ? `Q${selectedQuestionLabel}` : `Q${pageNumber}`}
                       </span>
                     )}
                   </div>
@@ -389,14 +396,7 @@ function PdfContent({
           </div>
         );
       })}
-      {/* Render hidden canvases for other pages to keep pdf loading but not visible when paginated */}
-      <div className="hidden">
-        {Array.from({ length: numPages }, (_, idx) => {
-          const pn = idx + 1;
-          if (pn === currentPage) return null;
-          return <canvas key={pn} id={`pdf-canvas-${pn}`} />;
-        })}
-      </div>
+
     </div>
   );
 }

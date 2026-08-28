@@ -115,4 +115,67 @@ describe("question-parser", () => {
     // Two-column: left column fully then right
     expect(res.map((r) => r.normalizedNumber)).toEqual(["1", "3", "2", "4"]);
   });
+
+  it("regression: generic header garble filtered without paper literals", () => {
+    const ocr = makeDoc([
+      makePage(1, [
+        { text: "4807, D_D", x: 0.7, y: 0.03 }, // generic garble in header band
+        { text: "1 Real question text here with sufficient length for validation" },
+      ]),
+    ]);
+    const res = parseQuestionsFromTextract(ocr, pagesMeta(1));
+    expect(res.length).toBe(1);
+    expect(res[0].normalizedNumber).toBe("1");
+  });
+
+  it("regression: MCQ with long mathematical options stays as one question with options", () => {
+    const longOpt = "A".repeat(250);
+    const ocr = makeDoc([
+      makePage(1, [
+        { text: "5 Which of the following is correct? This is a longer question stem with math" },
+        { text: `(A) ${longOpt}`, x: 0.12, y: 0.2 },
+        { text: "(B) Short option B", x: 0.12, y: 0.26 },
+        { text: "(C) Short option C", x: 0.12, y: 0.32 },
+        { text: "(D) Short option D", x: 0.12, y: 0.38 },
+        { text: "6 Next question after MCQ", x: 0.05, y: 0.48 },
+      ]),
+    ]);
+    const res = parseQuestionsFromTextract(ocr, pagesMeta(1));
+    // Should be 2 top-level questions, not 6 (options not promoted)
+    const top = res.filter((r) => r.depth === 0);
+    expect(top.map((r) => r.normalizedNumber)).toEqual(["5", "6"]);
+    const q5 = res.find((r) => r.normalizedNumber === "5");
+    expect(q5?.options?.length).toBe(4);
+    expect(q5?.options?.[0].label).toBe("A");
+  });
+
+  it("regression: subparts 22 (i)(ii)(iii) nested under 22", () => {
+    const ocr = makeDoc([
+      makePage(1, [
+        { text: "22 Case study question with introduction text long enough" },
+        { text: "(i) First subpart text here sufficiently long", x: 0.1, y: 0.2 },
+        { text: "(ii) Second subpart text here", x: 0.1, y: 0.25 },
+        { text: "(iii) Third subpart text", x: 0.1, y: 0.30 },
+      ]),
+    ]);
+    const res = parseQuestionsFromTextract(ocr, pagesMeta(1));
+    expect(res.find((r) => r.normalizedNumber === "22")).toBeDefined();
+    expect(res.find((r) => r.normalizedNumber === "22(i)")?.parent).toBe("22");
+    expect(res.find((r) => r.normalizedNumber === "22(ii)")?.parent).toBe("22");
+    expect(res.find((r) => r.normalizedNumber === "22(iii)")?.parent).toBe("22");
+    expect(res.find((r) => r.normalizedNumber === "22(i)")?.depth).toBe(1);
+  });
+
+  it("regression: instruction phrases never become questions", () => {
+    const ocr = makeDoc([
+      makePage(1, [
+        { text: "General Instructions: This paper contains ..." },
+        { text: "1 Real question" },
+        { text: "All Questions are compulsory." },
+        { text: "2 Second real question" },
+      ]),
+    ]);
+    const res = parseQuestionsFromTextract(ocr, pagesMeta(1));
+    expect(res.map((r) => r.normalizedNumber)).toEqual(["1", "2"]);
+  });
 });

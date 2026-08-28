@@ -84,6 +84,15 @@ export interface PageArtifact {
   imageBufferId?: string;
 }
 
+export interface QuestionOption {
+  label: string; // A, B, C, D
+  text: string;
+  rawText: string;
+  bbox?: NormalizedBox;
+}
+
+export type QuestionKind = "TOP_LEVEL_QUESTION" | "SUBQUESTION" | "OPTION" | "INSTRUCTION" | "SECTION" | "HEADER" | "FOOTER" | "FIGURE" | "TABLE" | "MARKS";
+
 export interface QuestionNode {
   id: string;
   sourceDocumentId: string;
@@ -91,17 +100,23 @@ export interface QuestionNode {
   sourceRegions: NormalizedBox[];
   rawNumber: string;
   normalizedNumber: string;
+  displayNumber: string;
   text: string;
   rawText: string;
   normalizedText: string;
   parentQuestionId?: string;
-  partType?: "SECTION" | "QUESTION" | "PART" | "SUBPART";
+  partType?: "SECTION" | "QUESTION" | "PART" | "SUBPART" | "OPTION" | "INSTRUCTION" | "HEADER" | "FOOTER";
+  kind?: QuestionKind;
   orderIndex: number;
   depth: number;
   section?: string;
   marks?: number;
   confidence: number;
   evidence: Evidence[];
+  options?: QuestionOption[];
+  children?: string[]; // child question ids (populated after tree build)
+  // provenance
+  sourcePageNumbers?: number[];
 }
 
 export interface AnswerRegion {
