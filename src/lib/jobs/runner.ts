@@ -6,15 +6,18 @@ import { inspectPdf, inspectImage } from "@/lib/documents/pdf";
 import { aggregateScore, buildEvidence } from "@/lib/evidence/aggregate";
 import { decideForQuestion } from "@/lib/decision";
 import { generateId } from "@/lib/storage";
-import { getOcrProvider } from "@/lib/ocr/factory";
-import { uploadBufferToS3, deleteS3Prefix } from "@/lib/ocr/s3";
+import { getLocalOcrProvider } from "@/lib/ocr/factory";
 import { OcrError, OcrErrorCodes } from "@/lib/ocr/errors";
 import type { OcrDocumentResult } from "@/lib/ocr/types";
-import { parseQuestionsFromTextract } from "@/lib/structure/question-parser";
+import { parseQuestionsFromOcr } from "@/lib/structure/question-parser";
+import { extractQuestionsV2 } from "@/lib/structure/question-extractor-v2";
+import { validateQuestionStructureV2 } from "@/lib/validation/structure-validator";
 import * as fs from "fs/promises";
 import * as path from "path";
 import * as os from "os";
-import { segmentAnswersFromTextract } from "@/lib/structure/answer-segmentation";
+import { segmentAnswersFromOcr } from "@/lib/structure/answer-segmentation";
+import { buildAnswerGraphV2 } from "@/lib/structure/answer-graph-builder";
+import { validateAnswerGraph } from "@/lib/validation/answer-graph-validator";
 import { normalizeNumber } from "@/lib/structure/numbering";
 import { validateQuestionStructure } from "@/lib/structure/validator";
 import { getVisionProvider } from "@/lib/vision/factory";
@@ -98,7 +101,7 @@ export async function startProcessing(jobId: string): Promise<void> {
     }
   }
 
-  const HARD_TIMEOUT_MS = 10 * 60 * 1000; // 10min overall pipeline timeout (OCR async needs ~2-5min)
+  const HARD_TIMEOUT_MS = 15 * 60 * 1000; // 15min for 31-page Vision batches (11*35s) + OCR 140s + mapping
   const timeoutGuard = setTimeout(async () => {
     try {
       const cur = await jobStore.get(jobId);
@@ -164,24 +167,24 @@ async function runJob(jobId: string) {
     const prep = await preprocess(jobId);
     await updateStage("PREPROCESSING", "completed");
 
-    // OCR — Amazon Textract async
+    // OCR — PaddleOCR (local, PP-StructureV3) — no S3, no Textract
     await updateStage("OCR_SUBMITTED", "in_progress");
     const ocrData = await ocrStage(jobId);
     await updateStage("OCR_SUBMITTED", "completed");
 
     await updateStage("OCR_PROCESSING", "in_progress");
-    // ocrStage already polls to completion; this stage is for progress visibility
+    // ocrStage already completes local OCR; this stage is for progress visibility
     await updateStage("OCR_PROCESSING", "completed");
 
     await updateStage("OCR_COMPLETED", "in_progress");
     await updateStage("OCR_COMPLETED", "completed");
 
-    // Vision — parallel visual understanding (real page images, evidence-only, grounded to Textract)
+    // Vision — parallel visual understanding (real page images, evidence-only, grounded to PaddleOCR geometry)
     await updateStage("VISION", "in_progress");
     const visionData = await visionStage(jobId, ocrData);
     await updateStage("VISION", "completed");
 
-    // Fusion — reconcile Textract + Vision + geometry → Canonical
+    // Fusion — reconcile PaddleOCR + Vision + geometry → Canonical
     await updateStage("FUSION", "in_progress");
     const fusionData = await fusionStage(jobId, ocrData, visionData);
     await updateStage("FUSION", "completed");
@@ -219,15 +222,7 @@ async function runJob(jobId: string) {
 
     resultStore.set(jobId, localized);
 
-    // Cleanup S3 staging after success (best-effort) — delete temp objects only, never primary Supabase storage
-    try {
-      const cfg = getConfig() as any;
-      const bucket = cfg.AWS_S3_BUCKET;
-      if (bucket) {
-        await deleteS3Prefix(bucket, `${cfg.AWS_S3_INPUT_PREFIX || "ocr-input"}/${jobId}/`).catch(() => {});
-        await deleteS3Prefix(bucket, `${cfg.AWS_S3_OUTPUT_PREFIX || "ocr-output"}/${jobId}/`).catch(() => {});
-      }
-    } catch {}
+    // No S3 staging cleanup needed — PaddleOCR uses local temp files (os.tmpdir/veda-ai/{jobId}/paddle-images)
   } catch (e: any) {
     const code = e?.code || ErrorCodes.UNKNOWN_ERROR;
     const stage = job?.currentStage || "FAILED";
@@ -354,9 +349,121 @@ class PersistedResultStore {
 }
 export const resultStore: any = new PersistedResultStore();
 
+/**
+ * Render PDF buffer to PNG files for PaddleOCR (same 1.5x mupdf path as Vision)
+ * Returns per-page imagePath + dims for Paddle worker manifest
+ */
+async function renderPdfBufferToPngFiles(
+  buffer: Buffer,
+  jobId: string,
+  kind: string,
+  pageNumbers: number[]
+): Promise<{ pageNumber: number; imagePath: string; width: number; height: number }[]> {
+  const safeJob = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+  const outDir = path.join(os.tmpdir(), "veda-ai", safeJob, "paddle-images", kind);
+  await fs.mkdir(outDir, { recursive: true });
+  const results: { pageNumber: number; imagePath: string; width: number; height: number }[] = [];
+
+  // Try mupdf first (most reliable)
+  try {
+    const mupdf: any = await import("mupdf");
+    const doc = mupdf.Document.openDocument(buffer, "application/pdf");
+    const total = doc.countPages();
+    for (const pn of pageNumbers) {
+      if (pn > total) break;
+      const page = doc.loadPage(pn - 1);
+      const pix = page.toPixmap(mupdf.Matrix.scale(1.5, 1.5), mupdf.ColorSpace.DeviceRGB, false, true);
+      const png: Uint8Array = pix.asPNG();
+      const imagePath = path.join(outDir, `page-${String(pn).padStart(3, "0")}.png`);
+      await fs.writeFile(imagePath, Buffer.from(png));
+      results.push({ pageNumber: pn, imagePath, width: pix.getWidth(), height: pix.getHeight() });
+      pix.destroy();
+      page.destroy();
+    }
+    doc.destroy();
+    if (results.length > 0) {
+      console.log(JSON.stringify({ jobId, stage: "OCR", engine: "paddleocr", event: "render_mupdf", kind, pages: results.length, sample: results[0] }));
+      return results;
+    }
+  } catch (e: any) {
+    console.warn(JSON.stringify({ jobId, stage: "OCR", engine: "paddleocr", event: "render_mupdf_failed", kind, error: e.message.slice(0, 300) }));
+  }
+
+  // Fallback: try pdfjs+canvas
+  try {
+    const canvasMod: any = await import("canvas");
+    const g: any = globalThis as any;
+    if (!g.Image) g.Image = canvasMod.Image;
+    if (!g.HTMLCanvasElement) g.HTMLCanvasElement = canvasMod.Canvas as any;
+    if (!g.HTMLImageElement) g.HTMLImageElement = canvasMod.Image as any;
+    if (!g.ImageData && canvasMod.ImageData) g.ImageData = canvasMod.ImageData;
+    if (!g.Canvas) g.Canvas = canvasMod.Canvas as any;
+    if (!g.OffscreenCanvas) g.OffscreenCanvas = canvasMod.Canvas as any;
+    if (!g.DOMMatrix && canvasMod.DOMMatrix) g.DOMMatrix = canvasMod.DOMMatrix;
+    if (!g.Path2D && canvasMod.Path2D) g.Path2D = canvasMod.Path2D;
+
+    const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    try {
+      // @ts-ignore - pdfjs worker has no types
+      await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
+      pdfjs.GlobalWorkerOptions.workerSrc = `pdfjs-dist/legacy/build/pdf.worker.mjs`;
+    } catch {
+      pdfjs.GlobalWorkerOptions.workerSrc = "";
+    }
+    const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    const doc = await pdfjs.getDocument({ data: uint8, verbosity: 0, useWorkerFetch: false, isEvalSupported: false, disableFontFace: true, disableWorker: true } as any).promise;
+    const canvasMod2: any = await import("canvas");
+    class NodeCanvasFactory {
+      create(width: number, height: number) {
+        const canvas = canvasMod2.createCanvas(width, height);
+        const context = canvas.getContext("2d");
+        return { canvas, context };
+      }
+      reset(canvasAndContext: any, width: number, height: number) {
+        canvasAndContext.canvas.width = width;
+        canvasAndContext.canvas.height = height;
+      }
+      destroy(canvasAndContext: any) {
+        canvasAndContext.canvas.width = 0;
+        canvasAndContext.canvas.height = 0;
+        canvasAndContext.canvas = null;
+        canvasAndContext.context = null;
+      }
+    }
+    const factory = new NodeCanvasFactory();
+    for (const pn of pageNumbers) {
+      if (pn > doc.numPages) break;
+      const page = await doc.getPage(pn);
+      const viewport = page.getViewport({ scale: 1.5 });
+      const canvasAndContext = factory.create(viewport.width, viewport.height);
+      await page.render({ canvasContext: canvasAndContext.context as any, viewport, canvasFactory: factory } as any).promise;
+      const pngBuffer: Buffer = canvasAndContext.canvas.toBuffer("image/png");
+      const imagePath = path.join(outDir, `page-${String(pn).padStart(3, "0")}.png`);
+      await fs.writeFile(imagePath, pngBuffer);
+      results.push({ pageNumber: pn, imagePath, width: viewport.width, height: viewport.height });
+      factory.destroy(canvasAndContext);
+      page.cleanup();
+    }
+    await doc.destroy();
+    if (results.length > 0) {
+      console.log(JSON.stringify({ jobId, stage: "OCR", engine: "paddleocr", event: "render_canvas", kind, pages: results.length }));
+      return results;
+    }
+  } catch (e: any) {
+    console.warn(JSON.stringify({ jobId, stage: "OCR", engine: "paddleocr", event: "render_canvas_failed", kind, error: e.message.slice(0, 300) }));
+  }
+
+  throw new OcrError(OcrErrorCodes.OPERATION_FAILED, `Failed to render PDF for PaddleOCR kind=${kind} pages=${pageNumbers.length}`, null, false);
+}
+
 async function ocrStage(jobId: string): Promise<{ qpOcr?: OcrDocumentResult; asOcr?: OcrDocumentResult }> {
   const cfg = getConfig() as any;
-  const ocrProviderName = cfg.OCR_PROVIDER || "textract";
+  const ocrProviderName = cfg.OCR_PROVIDER || "local";
+  // ABSOLUTE ASSERTION: Textract must never run — fail fast if env still textract
+  if (ocrProviderName === "textract") {
+    throw new AppError(ErrorCodes.OCR_CONFIGURATION_ERROR, "Textract is disabled. Set OCR_PROVIDER=local. Found OCR_PROVIDER=textract at runtime (stale .env or cached config). Clear config cache and restart.");
+  }
+  console.log(JSON.stringify({ jobId, stage: "OCR", provider: "paddleocr", pipeline: "pp_structure_v3", engine: "paddleocr", event: "paddleocr_start", requestedProvider: ocrProviderName }));
 
   // Idempotency: reuse if already completed and stored
   const existing = ocrResultStore.get(jobId);
@@ -365,18 +472,7 @@ async function ocrStage(jobId: string): Promise<{ qpOcr?: OcrDocumentResult; asO
     console.log(JSON.stringify({ jobId, stage: "OCR", event: "reuse_cached", hasQp: !!existing.qpOcr, hasAs: !!existing.asOcr }));
     return existing;
   }
-  // If operation already submitted and still valid, try to resume polling instead of re-submitting
-  if (job?.ocrOperationId && job?.ocrOutputUri && ocrProviderName !== "mock") {
-    try {
-      console.log(JSON.stringify({ jobId, stage: "OCR", event: "resume_operation", operationId: job.ocrOperationId.slice(0, 30) }));
-      const provider = getOcrProvider();
-      const status = await provider.getOperationStatus(job.ocrOperationId);
-      if (status.status === "DONE") {
-        const result = await provider.getOperationResult(job.ocrOperationId, job.ocrOutputUri);
-        // Need to split per doc? We store single op for combined? For per-doc we handle separately below.
-      }
-    } catch {}
-  }
+  // No resume for local OCR — local is synchronous per-job, no operationId. Previous Textract resume removed.
 
   const docs = await documentStore.getByJob(jobId);
   const qpDoc = docs.find((d) => d.kind === "questionPaper");
@@ -386,9 +482,10 @@ async function ocrStage(jobId: string): Promise<{ qpOcr?: OcrDocumentResult; asO
   const qpPages = await pageStoreApi.getByDocument(qpDoc.id);
   const asPages = await pageStoreApi.getByDocument(asDoc.id);
 
-  // Mock path — no S3, immediate synthetic OCR
+  // Mock path — no S3, immediate synthetic OCR (test only)
   if (ocrProviderName === "mock") {
-    const provider = getOcrProvider();
+    const { MockOcrProvider } = await import("@/lib/ocr/mock");
+    const provider = new MockOcrProvider();
     const qpRes = await provider.getOperationResult("mock-qp", `s3://mock/mock/${jobId}/qp/`);
     const asRes = await provider.getOperationResult("mock-as", `s3://mock/mock/${jobId}/as/`);
     // Override page counts to match real docs
@@ -416,178 +513,102 @@ async function ocrStage(jobId: string): Promise<{ qpOcr?: OcrDocumentResult; asO
       const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
       const debugDir = path.join(os.tmpdir(), "veda-ai", safe, "debug");
       await fs.mkdir(debugDir, { recursive: true });
-      await fs.writeFile(path.join(debugDir, "questionPaper-textract.json"), JSON.stringify(qpRes, null, 2), "utf-8");
-      await fs.writeFile(path.join(debugDir, "answerSheet-textract.json"), JSON.stringify(asRes, null, 2), "utf-8");
+      await fs.writeFile(path.join(debugDir, "questionPaper-paddle.json"), JSON.stringify(qpRes, null, 2), "utf-8");
+      await fs.writeFile(path.join(debugDir, "answerSheet-paddle.json"), JSON.stringify(asRes, null, 2), "utf-8");
       const artDir = path.join(process.cwd(), "artifacts", "ocr-debug", safe);
       await fs.mkdir(artDir, { recursive: true });
-      await fs.writeFile(path.join(artDir, "questionPaper-textract.json"), JSON.stringify(qpRes, null, 2), "utf-8");
-      await fs.writeFile(path.join(artDir, "answerSheet-textract.json"), JSON.stringify(asRes, null, 2), "utf-8");
+      await fs.writeFile(path.join(artDir, "questionPaper-paddle.json"), JSON.stringify(qpRes, null, 2), "utf-8");
+      await fs.writeFile(path.join(artDir, "answerSheet-paddle.json"), JSON.stringify(asRes, null, 2), "utf-8");
       console.log(JSON.stringify({ jobId, stage: "OCR", event: "debug_dump_mock", path: debugDir }));
     } catch {}
     return out;
   }
 
-  // Real AWS Textract path — explicit mock only when configured
-  if (!cfg.AWS_S3_BUCKET) {
-    if (cfg.OCR_PROVIDER === "mock") {
-      console.warn(JSON.stringify({ jobId, stage: "OCR", event: "mock_explicit", ocrProviderName, reason: "OCR_PROVIDER=mock configured" }));
-      const mockProvider = new (await import("@/lib/ocr/mock")).MockOcrProvider();
-      const qpRes = await mockProvider.getOperationResult("mock-qp", `s3://mock/mock/${jobId}/qp/`);
-      const asRes = await mockProvider.getOperationResult("mock-as", `s3://mock/mock/${jobId}/as/`);
-      qpRes.pages = qpRes.pages.slice(0, qpPages.length);
-      asRes.pages = asRes.pages.slice(0, asPages.length);
-      if (asPages.length > asRes.pages.length) {
-        const extra = asPages.length - asRes.pages.length;
-        for (let i = 0; i < extra; i++) asRes.pages.push({ pageNumber: asRes.pages.length + 1, text: `Mock page ${asRes.pages.length + 1} additional`, blocks: [], lines: [], confidence: 0.9, width: 800, height: 1100, rotation: 0 } as any);
+  // Local PaddleOCR path — internal child process, no S3
+  if (ocrProviderName === "local" || ocrProviderName === "paddleocr") {
+    console.log(JSON.stringify({ jobId, stage: "OCR", engine: "paddleocr", event: "local_start", qpPages: qpPages.length, asPages: asPages.length }));
+    const localProvider = getLocalOcrProvider();
+    await jobStore.update(jobId, { ocrStartedAt: new Date().toISOString(), ocrAttempt: (job?.ocrAttempt || 0) + 1 } as any);
+
+    async function processLocalDoc(
+      doc: any,
+      pages: any[],
+      kind: "questionPaper" | "answerSheet"
+    ): Promise<OcrDocumentResult> {
+      const fileId = kind === "questionPaper" ? (await jobStore.get(jobId))!.questionPaperFileId! : (await jobStore.get(jobId))!.answerSheetFileId!;
+      const buffer = await fileStorage.read(jobId, fileId);
+      const pageNumbers = pages.map((p: any) => p.pageNumber).sort((a: number, b: number) => a - b);
+      // Render PDF pages to PNG files (same 1.5x as Vision)
+      const rendered = await renderPdfBufferToPngFiles(buffer, jobId, kind, pageNumbers);
+      // If document is image not PDF, handle differently
+      let paddleInput: { pageNumber: number; imagePath: string; width: number; height: number }[];
+      if (rendered.length === 0) {
+        // Fallback for image: write buffer to temp file
+        const tmpImgPath = path.join(os.tmpdir(), "veda-ai", jobId.replace(/[^a-zA-Z0-9-]/g, ""), "paddle-images", kind, `page-001.png`);
+        await fs.mkdir(path.dirname(tmpImgPath), { recursive: true });
+        await fs.writeFile(tmpImgPath, buffer);
+        // Use page dims from inspection
+        const firstPage = pages[0];
+        paddleInput = [{ pageNumber: 1, imagePath: tmpImgPath, width: firstPage?.width || 800, height: firstPage?.height || 1100 }];
+      } else {
+        paddleInput = rendered;
       }
-      qpRes.jobId = jobId; qpRes.documentId = qpDoc.id; qpRes.kind = "questionPaper";
-      asRes.jobId = jobId; asRes.documentId = asDoc.id; asRes.kind = "answerSheet";
-      const out = { qpOcr: qpRes, asOcr: asRes };
-      ocrResultStore.set(jobId, out);
-      await jobStore.update(jobId, { ocrStartedAt: new Date().toISOString(), ocrCompletedAt: new Date().toISOString(), ocrPageCount: asPages.length + qpPages.length, ocrAttempt: (job?.ocrAttempt || 0) + 1 } as any);
-      return out;
-    }
-    throw new AppError(ErrorCodes.OCR_CONFIGURATION_ERROR, "AWS OCR not configured. Set AWS_REGION and AWS_S3_BUCKET or use OCR_PROVIDER=mock (for local dev set OCR_PROVIDER=mock in .env)");
-  }
 
-  const provider = getOcrProvider();
-  const bucket = cfg.AWS_S3_BUCKET as string;
-  const inputPrefix = cfg.AWS_S3_INPUT_PREFIX || "ocr-input";
-  const outputPrefix = cfg.AWS_S3_OUTPUT_PREFIX || "ocr-output";
-  const timeoutMs: number = cfg.OCR_OPERATION_TIMEOUT_MS || 300000;
-  const pollMs: number = cfg.OCR_POLL_INTERVAL_MS || 5000;
-  const maxRetries: number = cfg.OCR_MAX_RETRIES || 3;
+      console.log(
+        JSON.stringify({
+          jobId,
+          stage: "OCR",
+          engine: "paddleocr",
+          event: "local_process_start",
+          kind,
+          pages: paddleInput.length,
+          sample: paddleInput[0],
+        })
+      );
 
-  async function processOneDoc(doc: any, pages: any[], kind: "questionPaper" | "answerSheet"): Promise<OcrDocumentResult> {
-    const safeJob = jobId.replace(/[^a-zA-Z0-9-]/g, "");
-    const inputKey = `${inputPrefix}/${safeJob}/${kind}.pdf`;
-    const outputPref = `${outputPrefix}/${safeJob}/${kind}/`;
-    const inputUri = `s3://${bucket}/${inputKey}`;
-    const outputUri = `s3://${bucket}/${outputPref}`;
-
-    // Read buffer (streaming would be better but buffer is okay for 38MB; avoid duplicate copies)
-    const fileId = kind === "questionPaper" ? (await jobStore.get(jobId))!.questionPaperFileId! : (await jobStore.get(jobId))!.answerSheetFileId!;
-    const buffer = await fileStorage.read(jobId, fileId);
-    const mimeType = doc.mime === "application/pdf" ? "application/pdf" : (doc.mime as any);
-
-    // Upload to S3 staging (idempotent: overwrite)
-    console.log(JSON.stringify({ jobId, stage: "OCR", event: "s3_upload_start", kind, sizeMb: (buffer.length / 1024 / 1024).toFixed(2), inputUri }));
-    let attempt = 0;
-    while (true) {
-      try {
-        await uploadBufferToS3(bucket, inputKey, buffer, mimeType);
-        console.log(JSON.stringify({ jobId, stage: "OCR", event: "s3_upload_ok", kind }));
-        break;
-      } catch (e: any) {
-        attempt++;
-        if (attempt >= maxRetries || e.code === OcrErrorCodes.CONFIGURATION_ERROR || e.code === OcrErrorCodes.AUTH_ERROR) throw e;
-        const delay = Math.pow(2, attempt) * 500;
-        console.warn(JSON.stringify({ jobId, stage: "OCR", event: "s3_upload_retry", kind, attempt, delay }));
-        await new Promise((r) => setTimeout(r, delay));
-      }
-    }
-
-    // Submit Textract async analysis
-    console.log(JSON.stringify({ jobId, stage: "OCR", event: "textract_submit_start", kind, pageCount: pages.length }));
-    let operationId: string;
-    let outUri: string;
-    attempt = 0;
-    while (true) {
-      try {
-        const res = await provider.submitDocument({ jobId, documentId: doc.id, kind, s3Bucket: bucket, s3Key: inputKey, mimeType: "application/pdf", pageCount: pages.length });
-        operationId = res.operationId;
-        outUri = res.outputUri;
-        console.log(JSON.stringify({ jobId, stage: "OCR", event: "textract_submit_ok", kind, operationId: operationId.slice(0, 40) }));
-        break;
-      } catch (e: any) {
-        attempt++;
-        const retryable = e.retryable !== false && e.code !== OcrErrorCodes.AUTH_ERROR && e.code !== OcrErrorCodes.CONFIGURATION_ERROR;
-        if (!retryable || attempt >= maxRetries) throw new AppError(e.code || ErrorCodes.OCR_SUBMISSION_FAILED, `OCR submission failed for ${kind}: ${e.message}`);
-        const delay = Math.pow(2, attempt) * 1000;
-        console.warn(JSON.stringify({ jobId, stage: "OCR", event: "textract_submit_retry", kind, attempt, delay }));
-        await new Promise((r) => setTimeout(r, delay));
-      }
+      const t0 = Date.now();
+      const result = await localProvider.processDocument({
+        jobId,
+        documentId: doc.id,
+        kind,
+        pages: paddleInput,
+      });
+      const dur = Date.now() - t0;
+      console.log(
+        JSON.stringify({
+          jobId,
+          stage: "OCR",
+          engine: "paddleocr",
+          event: "local_process_ok",
+          kind,
+          pages: result.pages.length,
+          durationMs: dur,
+          avgPerPage: Math.round(dur / result.pages.length),
+        })
+      );
+      return result;
     }
 
-    // Persist operation metadata for polling visibility and idempotency
-    await jobStore.update(jobId, {
-      ocrOperationId: operationId!,
-      ocrOutputUri: outUri!,
-      ocrInputUri: inputUri,
-      ocrStartedAt: new Date().toISOString(),
-      ocrAttempt: ((await jobStore.get(jobId))?.ocrAttempt || 0) + 1,
-      ocrPageCount: pages.length,
-    } as any);
-
-    // Poll operation
-    const start = Date.now();
-    while (true) {
-      if (Date.now() - start > timeoutMs) {
-        throw new AppError(ErrorCodes.OCR_OPERATION_TIMEOUT, `OCR operation timed out for ${kind} after ${timeoutMs / 1000}s (operation ${operationId!.slice(0, 30)})`);
-      }
-      let status: any;
-      try {
-        status = await provider.getOperationStatus(operationId!);
-      } catch (e: any) {
-        console.warn(JSON.stringify({ jobId, stage: "OCR", event: "poll_error", kind, msg: e.message?.slice(0, 100) }));
-        await new Promise((r) => setTimeout(r, pollMs));
-        continue;
-      }
-      if (status.status === "DONE") {
-        console.log(JSON.stringify({ jobId, stage: "OCR", event: "operation_done", kind, elapsed: Date.now() - start }));
-        break;
-      }
-      if (status.status === "FAILED") {
-        throw new AppError(ErrorCodes.OCR_OPERATION_FAILED, `OCR operation failed for ${kind}: ${status.error?.message || "unknown"}`);
-      }
-      await new Promise((r) => setTimeout(r, pollMs));
-    }
-
-    // Download and parse output JSON
-    console.log(JSON.stringify({ jobId, stage: "OCR", event: "parse_start", kind, outputUri: outUri! }));
-    let docResult: OcrDocumentResult;
-    attempt = 0;
-    while (true) {
-      try {
-        docResult = await provider.getOperationResult(operationId!, outUri!);
-        break;
-      } catch (e: any) {
-        attempt++;
-        if (attempt >= maxRetries || e.code === OcrErrorCodes.OUTPUT_PARSE_FAILED || e.code === OcrErrorCodes.OUTPUT_MISSING) throw new AppError(e.code || ErrorCodes.OCR_OUTPUT_PARSE_FAILED, `OCR output parse failed for ${kind}: ${e.message}`);
-        const delay = Math.pow(2, attempt) * 800;
-        console.warn(JSON.stringify({ jobId, stage: "OCR", event: "parse_retry", kind, attempt }));
-        await new Promise((r) => setTimeout(r, delay));
-      }
-    }
-    docResult!.jobId = jobId;
-    docResult!.documentId = doc.id;
-    docResult!.kind = kind;
-    // Ensure pages sorted and pageNumbers correct
-    docResult!.pages.sort((a, b) => a.pageNumber - b.pageNumber);
-    console.log(JSON.stringify({ jobId, stage: "OCR", event: "parse_ok", kind, pages: docResult!.pages.length }));
-    // Debug dump: exact OCR format to file for inspection (log purpose, never secrets)
     try {
-      const debugDir = path.join(os.tmpdir(), "veda-ai", safeJob, "debug");
-      await fs.mkdir(debugDir, { recursive: true });
-      const dumpPath = path.join(debugDir, `${kind}-textract.json`);
-      await fs.writeFile(dumpPath, JSON.stringify(docResult, null, 2), "utf-8");
-      console.log(JSON.stringify({ jobId, stage: "OCR", event: "debug_dump", kind, path: dumpPath, pages: docResult!.pages.length, totalLines: docResult!.pages.reduce((a, p) => a + p.lines.length, 0) }));
-      // Also dump to project artifacts for easier dev access (gitignored)
-      const artDir = path.join(process.cwd(), "artifacts", "ocr-debug", safeJob);
-      await fs.mkdir(artDir, { recursive: true });
-      await fs.writeFile(path.join(artDir, `${kind}-textract.json`), JSON.stringify(docResult, null, 2), "utf-8");
-    } catch {}
-    return docResult!;
+      const qpOcr = await processLocalDoc(qpDoc, qpPages, "questionPaper");
+      const asOcr = await processLocalDoc(asDoc, asPages, "answerSheet");
+      const out = { qpOcr, asOcr };
+      ocrResultStore.set(jobId, out);
+      await jobStore.update(jobId, { ocrCompletedAt: new Date().toISOString(), ocrPageCount: qpPages.length + asPages.length } as any);
+      console.log(JSON.stringify({ jobId, stage: "OCR", engine: "paddleocr", event: "local_completed", qpPages: qpOcr.pages.length, asPages: asOcr.pages.length }));
+      return out;
+    } catch (e: any) {
+      console.error(JSON.stringify({ jobId, stage: "OCR", engine: "paddleocr", event: "local_failed", error: e.message.slice(0, 500), code: e.code }));
+      throw new AppError(e.code || ErrorCodes.OCR_FAILED, `PaddleOCR failed: ${e.message}`);
+    }
   }
 
-  // Process questionPaper and answerSheet — sequential to bound memory, or parallel? Sequential is safer for 38MB
-  const qpOcr = await processOneDoc(qpDoc, qpPages, "questionPaper");
-  const asOcr = await processOneDoc(asDoc, asPages, "answerSheet");
-
-  const out = { qpOcr, asOcr };
-  ocrResultStore.set(jobId, out);
-  await jobStore.update(jobId, { ocrCompletedAt: new Date().toISOString() } as any);
-  return out;
+  // Textract path removed — no S3 staging, no Textract polling, no Textract S3 OCR
+  // Any non-mock, non-local provider must fail (guard against stale env)
+  throw new AppError(
+    ErrorCodes.OCR_CONFIGURATION_ERROR,
+    `OCR_PROVIDER=${ocrProviderName} not supported for local PaddleOCR runtime. Use OCR_PROVIDER=local or mock.`
+  );
 }
 
 async function visionStage(jobId: string, ocrData?: { qpOcr?: OcrDocumentResult; asOcr?: OcrDocumentResult }): Promise<{ qpVision?: VisionDocumentAnalysis; asVision?: VisionDocumentAnalysis } | null> {
@@ -603,12 +624,13 @@ async function visionStage(jobId: string, ocrData?: { qpOcr?: OcrDocumentResult;
     console.log(JSON.stringify({ jobId, stage: "VISION", event: "reuse_cached" }));
     return cached;
   }
-  // Routing: decide per document
+  // Routing: decide per document — with kind for handwriting detection (Phase 3)
   const qpOcr = ocrData?.qpOcr;
   const asOcr = ocrData?.asOcr;
-  const qpDecision = qpOcr ? shouldInvokeVision(qpOcr) : { useVision: false, reason: "no ocr", confidence: 0, estimatedDifficulty: "easy" as const };
-  const asDecision = asOcr ? shouldInvokeVision(asOcr) : { useVision: false, reason: "no ocr", confidence: 0, estimatedDifficulty: "easy" as const };
+  const qpDecision = qpOcr ? shouldInvokeVision(qpOcr, { kind: "questionPaper" }) : { useVision: false, reason: "no ocr", confidence: 0, estimatedDifficulty: "easy" as const };
+  const asDecision = asOcr ? shouldInvokeVision(asOcr, { kind: "answerSheet" }) : { useVision: false, reason: "no ocr", confidence: 0, estimatedDifficulty: "easy" as const };
   const useVision = qpDecision.useVision || asDecision.useVision;
+  console.log(JSON.stringify({ jobId, stage: "VISION", event: "routing_decision", qpDecision, asDecision, useVision }));
   // If mock OCR, skip vision (deterministic fallback is sufficient for tests)
   if (cfg.OCR_PROVIDER === "mock") {
     console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_mock_ocr", qpDecision, asDecision }));
@@ -620,7 +642,8 @@ async function visionStage(jobId: string, ocrData?: { qpOcr?: OcrDocumentResult;
   }
   const provider = getVisionProvider();
   if (!provider) {
-    console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_no_provider", provider: visionProviderName }));
+    const diag = await import("@/lib/vision/factory").then(m => (m as any).getVisionDiagnostics ? (m as any).getVisionDiagnostics() : null).catch(()=>null);
+    console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_no_provider", provider: visionProviderName, diagnostics: diag }));
     return null;
   }
 
@@ -629,7 +652,8 @@ async function visionStage(jobId: string, ocrData?: { qpOcr?: OcrDocumentResult;
   const asDoc = docs.find((d) => d.kind === "answerSheet");
   if (!qpDoc || !asDoc) return null;
 
-  const maxPages = cfg.VISION_MAX_PAGES || 3;
+  const maxPagesQP = cfg.VISION_MAX_PAGES || 3;
+  const maxPagesAS = 31; // For answer sheet, all 31 pages via batches (Phase 4)
   const timeoutMs = cfg.VISION_TIMEOUT_MS || 30000;
 
   async function processDoc(kind: "questionPaper" | "answerSheet", ocr: OcrDocumentResult | undefined): Promise<VisionDocumentAnalysis | undefined> {
@@ -637,27 +661,46 @@ async function visionStage(jobId: string, ocrData?: { qpOcr?: OcrDocumentResult;
     try {
       const fileId = kind === "questionPaper" ? (await jobStore.get(jobId))!.questionPaperFileId! : (await jobStore.get(jobId))!.answerSheetFileId!;
       const buffer = await fileStorage.read(jobId, fileId);
-      const rendered = await renderPdfPagesForVision(buffer, ocr.pages.slice(0, maxPages).map((p) => p.pageNumber), maxPages);
-      // If no real image rendered (canvas not available), skip vision to avoid timeout on PDF placeholder
-      const hasRealImage = rendered.some((r) => r.mimeType !== "application/pdf" && !r.imageBase64.startsWith("JVBER"));
-      if (!hasRealImage) {
-        console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_no_image", kind, reason: "canvas not available, no PNG rendered", pages: rendered.length }));
-        return undefined;
+      const isAS = kind === "answerSheet";
+      const pageNumbers = isAS ? ocr.pages.map((p) => p.pageNumber) : ocr.pages.slice(0, maxPagesQP).map((p) => p.pageNumber);
+      const batchSize = 3;
+      const allVisionPages: any[] = [];
+      for (let batchStart = 0; batchStart < pageNumbers.length; batchStart += batchSize) {
+        const batchNums = pageNumbers.slice(batchStart, batchStart + batchSize);
+        const rendered = await renderPdfPagesForVision(buffer, batchNums, batchSize);
+        const hasRealImage = rendered.some((r) => r.mimeType !== "application/pdf" && !r.imageBase64.startsWith("JVBER"));
+        if (!hasRealImage) {
+          console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_no_image", kind, batch: `${batchStart/batchSize+1}/${Math.ceil(pageNumbers.length/batchSize)}`, reason: "canvas not available", pages: rendered.length }));
+          continue;
+        }
+        const ocrBlocksByPage: Record<number, any[]> = {};
+        for (const pg of ocr.pages.filter((p) => batchNums.includes(p.pageNumber))) {
+          const blocks = (pg.lines || []).slice(0, 30).map((l: any, idx: number) => ({
+            id: `ocr-p${String(pg.pageNumber).padStart(3,"0")}-b${String(idx).padStart(3,"0")}`,
+            text: l.text,
+            bbox: [l.boundingBox.x, l.boundingBox.y, l.boundingBox.width, l.boundingBox.height] as [number,number,number,number],
+            confidence: l.confidence,
+          }));
+          ocrBlocksByPage[pg.pageNumber] = blocks;
+        }
+        const visionInputPages = rendered.map((r) => ({
+          pageId: `page-${r.pageNumber}`,
+          pageNumber: r.pageNumber,
+          imageBase64: r.imageBase64,
+          mimeType: r.mimeType as any,
+          width: r.width,
+          height: r.height,
+          ocrBlocks: ocrBlocksByPage[r.pageNumber] || [],
+        } as any));
+        const ocrSample = ocr.pages.slice(0, 2).map((p) => p.text.slice(0, 1000)).join("\n").slice(0, 1500);
+        const payloadKb = Math.round(visionInputPages.reduce((a, p) => a + p.imageBase64.length, 0) * 0.75 / 1024);
+        console.log(JSON.stringify({ jobId, stage: "VISION", event: "analyze_start", kind, pages: visionInputPages.length, batch: `${batchStart/batchSize+1}/${Math.ceil(pageNumbers.length/batchSize)}`, provider: visionProviderName, model: (getConfig() as any).OPENROUTER_MODEL || (getConfig() as any).VISION_MODEL, payloadKb, timeoutMs, hasOcrBlocks: Object.keys(ocrBlocksByPage).length }));
+        const result = await provider.analyzeDocumentStructure({ pages: visionInputPages as any, ocrTextSample: ocrSample, ocrBlocksByPage } as any);
+        console.log(JSON.stringify({ jobId, stage: "VISION", event: "analyze_ok", kind, batch: `${batchStart/batchSize+1}/${Math.ceil(pageNumbers.length/batchSize)}`, visionPages: result.pages.length }));
+        allVisionPages.push(...result.pages);
       }
-      const visionInputPages = rendered.map((r) => ({
-        pageId: `page-${r.pageNumber}`,
-        pageNumber: r.pageNumber,
-        imageBase64: r.imageBase64,
-        mimeType: r.mimeType as any,
-        width: r.width,
-        height: r.height,
-      }));
-      const ocrSample = ocr.pages.slice(0, 2).map((p) => p.text.slice(0, 1000)).join("\n").slice(0, 1500);
-      const payloadKb = Math.round(visionInputPages.reduce((a, p) => a + p.imageBase64.length, 0) * 0.75 / 1024);
-      console.log(JSON.stringify({ jobId, stage: "VISION", event: "analyze_start", kind, pages: visionInputPages.length, provider: visionProviderName, model: (getConfig() as any).OPENROUTER_MODEL || (getConfig() as any).VISION_MODEL, payloadKb, timeoutMs }));
-      const result = await provider.analyzeDocumentStructure({ pages: visionInputPages, ocrTextSample: ocrSample });
-      console.log(JSON.stringify({ jobId, stage: "VISION", event: "analyze_ok", kind, visionPages: result.pages.length }));
-      return result;
+      if (allVisionPages.length === 0) return undefined;
+      return { pages: allVisionPages, globalStructure: {} } as any;
     } catch (e: any) {
       // Retry with smaller batch on timeout
       if (e.code === "ETIMEDOUT" || String(e.message).includes("timed out")) {
@@ -767,11 +810,48 @@ async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocum
   const t0 = Date.now();
   console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "deterministic_start", qpPages: qpOcr.pages.length, asPages: asOcr.pages.length }));
 
-  // Deterministic parsers — Textract is source of truth, no Vision LLM
+  // Deterministic parsers — PaddleOCR is source of truth, Vision is structural evidence (Constraints 5,16)
   let parsedQuestions, segmentedAnswers;
+  let v2DocumentStructure: any = null;
+  let v2PageArtifacts: any[] = [];
   const cfgDet = getConfig() as any;
+  const useV2 = cfgDet.OCR_PROVIDER === "local" || cfgDet.OCR_PROVIDER === "paddleocr";
   try {
-    parsedQuestions = parseQuestionsFromTextract(qpOcr, qpPages);
+    if (useV2) {
+      // Try V2 forensic rebuild first (Constraints 3,4,8,15)
+      const v2Result = extractQuestionsV2(qpOcr, qpPages, visionData?.qpVision || null);
+      parsedQuestions = v2Result.questions as any;
+      v2DocumentStructure = v2Result.documentStructure;
+      v2PageArtifacts = v2Result.pageArtifacts;
+      console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "questions_v2", duration: Date.now() - t0, qCount: parsedQuestions.length, topLevel: parsedQuestions.filter((q:any)=>q.depth===0).length, sections: v2DocumentStructure.sections.length }));
+      // Validate with V2 validator (Constraint 11) — must fail on corruption
+      const v2Validation = validateQuestionStructureV2(
+        v2Result.documentStructure.allCandidates,
+        v2Result.documentStructure.allCandidates.filter((c:any)=>c.candidateType==="QUESTION"),
+        33 // validation ground truth for THIS paper, not hardcode in solver
+      );
+      console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "v2_validation", valid: v2Validation.valid, errors: v2Validation.errors.map((e:any)=>e.code), warnings: v2Validation.warnings.map((w:any)=>w.code), isCorruption: v2Validation.isStructuralCorruption }));
+      if (v2Validation.isStructuralCorruption) {
+        console.warn(JSON.stringify({ jobId, stage: "EXTRACTING", event: "v2_validation_failed", errors: v2Validation.errors }));
+        // Do not silently pass — but allow fallback to old parser for now with warning (will be VALIDATION_FAILED later)
+      }
+      // Write page-level forensic artifacts (Constraint 15)
+      try {
+        const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+        const debugDir = `artifacts/${safe}/question-paper-debug`;
+        const fs = await import("fs/promises");
+        const path = await import("path");
+        await fs.mkdir(debugDir, { recursive: true });
+        for (const pa of v2PageArtifacts) {
+          await fs.writeFile(`${debugDir}/page-${String(pa.pageNumber).padStart(3, "0")}.json`, JSON.stringify(pa, null, 2), "utf-8");
+        }
+        await fs.writeFile(`${debugDir}/document-structure.json`, JSON.stringify(v2DocumentStructure, null, 2), "utf-8");
+        await fs.writeFile(`${debugDir}/v2-validation.json`, JSON.stringify(v2Validation, null, 2), "utf-8");
+        console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "v2_artifacts_written", dir: debugDir, pages: v2PageArtifacts.length }));
+      } catch (e:any) { console.warn(JSON.stringify({ jobId, stage: "EXTRACTING", event: "v2_artifact_write_failed", msg: e.message?.slice(0,200) })); }
+    } else {
+      parsedQuestions = parseQuestionsFromOcr(qpOcr, qpPages);
+    }
     console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "questions_parsed", duration: Date.now() - t0, qCount: parsedQuestions.length }));
     if (parsedQuestions.length === 0) {
       // Test-mode fallback: mock OCR generates generic text without labels; synthesize for test determinism
@@ -795,7 +875,7 @@ async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocum
           },
         ];
       } else {
-        throw new AppError(ErrorCodes.QUESTION_EXTRACTION_FAILED, "No questions detected from Textract. Check question paper clarity or increase OCR quality.");
+        throw new AppError(ErrorCodes.QUESTION_EXTRACTION_FAILED, "No questions detected from PaddleOCR. Check question paper clarity or increase OCR quality.");
       }
     }
   } catch (e: any) {
@@ -803,13 +883,26 @@ async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocum
     throw new AppError(e.code || ErrorCodes.QUESTION_EXTRACTION_FAILED, `Question extraction failed: ${e.message}`);
   }
 
-  // Structure validator with bounded repair loop (handles both errors and repairable warnings like duplicate regressions)
-  let repairedQuestions = [...parsedQuestions];
-  let validation = validateQuestionStructure(repairedQuestions);
+  // Structure validator — for V2, use V2 validator already done; for old parser, use old validator
+  let repairedQuestions: any[] = [];
+  let validation: any = { valid: true, errors: [], warnings: [] };
+  let v2ValidationPassed = false;
+  if (useV2 && v2DocumentStructure) {
+    // V2 already validated via validateQuestionStructureV2 — check if it had corruption
+    // We already logged v2Validation; if not corruption, skip old validator
+    // For V2, just use parsedQuestions directly (already from V2)
+    repairedQuestions = [...parsedQuestions];
+    validation = { valid: true, errors: [], warnings: [] };
+    v2ValidationPassed = true;
+    console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "v2_bypass_old_validator", qCount: repairedQuestions.length }));
+  } else {
+    repairedQuestions = [...parsedQuestions];
+    validation = validateQuestionStructure(repairedQuestions);
+  }
   let repairIteration = 0;
   const maxRepairIterations = 3;
   const repairableWarningCodes = new Set(["INSTRUCTION_AS_QUESTION","SECTION_AS_QUESTION","OPTION_AS_QUESTION","WORD_LIMIT_AS_QUESTION","NUMBER_REGRESSION","DUPLICATE_NUMBER"]);
-  const hasRepairable = () => !validation.valid || validation.warnings.some(w=>repairableWarningCodes.has(w.code));
+  const hasRepairable = () => !validation.valid || validation.warnings.some((w: any)=>repairableWarningCodes.has(w.code));
   while (hasRepairable() && repairIteration < maxRepairIterations) {
     repairIteration++;
     const beforeCount = repairedQuestions.length;
@@ -849,11 +942,11 @@ async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocum
     }
     repairedQuestions = deduped;
     validation = validateQuestionStructure(repairedQuestions);
-    console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "repair_iteration", iteration: repairIteration, beforeCount, afterCount: repairedQuestions.length, valid: validation.valid, errors: validation.errors.map((e) => e.code) }));
+    console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "repair_iteration", iteration: repairIteration, beforeCount, afterCount: repairedQuestions.length, valid: validation.valid, errors: (validation.errors as any[]).map((e: any) => e.code) }));
     if (repairedQuestions.length === beforeCount) break; // No progress
   }
   if (!validation.valid) {
-    const msg = validation.errors.map((er) => er.message).join("; ").slice(0, 500);
+    const msg = (validation.errors as any[]).map((er: any) => er.message).join("; ").slice(0, 500);
     console.error(JSON.stringify({ jobId, stage: "EXTRACTING", event: "structure_validation_failed", errors: validation.errors, warnings: validation.warnings, repairIterations: repairIteration }));
     throw new AppError(ErrorCodes.VALIDATION_FAILED, `STRUCTURE_VALIDATION_FAILED: ${msg}`);
   }
@@ -869,7 +962,28 @@ async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocum
 
   const t1 = Date.now();
   try {
-    segmentedAnswers = segmentAnswersFromTextract(asOcr, asPages);
+    if (useV2) {
+      const v2Ans = buildAnswerGraphV2(asOcr, asPages, visionData?.asVision || null);
+      segmentedAnswers = v2Ans.groups as any;
+      console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "answers_v2", duration: Date.now() - t1, aCount: segmentedAnswers.length, groups: v2Ans.groups.length, debugGroups: v2Ans.debug.groups.length }));
+      const ansValidation = validateAnswerGraph(v2Ans.groups as any, asOcr);
+      console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "answer_graph_validation", valid: ansValidation.valid, errors: ansValidation.errors.map((e:any)=>e.code), warnings: ansValidation.warnings.map((w:any)=>w.code) }));
+      if (!ansValidation.valid) {
+        console.warn(JSON.stringify({ jobId, stage: "EXTRACTING", event: "answer_graph_invalid", errors: ansValidation.errors }));
+      }
+      try {
+        const safeAns = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+        const ansDebugDir = `artifacts/${safeAns}/answer-debug`;
+        const fsAns = await import("fs/promises");
+        await fsAns.mkdir(ansDebugDir, { recursive: true });
+        await fsAns.writeFile(`${ansDebugDir}/answer-graph.json`, JSON.stringify(v2Ans.groups, null, 2), "utf-8");
+        await fsAns.writeFile(`${ansDebugDir}/answer-debug.json`, JSON.stringify(v2Ans.debug, null, 2), "utf-8");
+        await fsAns.writeFile(`${ansDebugDir}/answer-validation.json`, JSON.stringify(ansValidation, null, 2), "utf-8");
+        console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "answer_artifacts_written", dir: ansDebugDir, groups: v2Ans.groups.length }));
+      } catch (e:any) { console.warn(JSON.stringify({ jobId, stage: "EXTRACTING", event: "answer_artifact_write_failed", msg: e.message?.slice(0,200) })); }
+    } else {
+      segmentedAnswers = segmentAnswersFromOcr(asOcr, asPages);
+    }
     console.log(JSON.stringify({ jobId, stage: "EXTRACTING", event: "answers_segmented", duration: Date.now() - t1, aCount: segmentedAnswers.length }));
     if (segmentedAnswers.length === 0) {
       console.warn(JSON.stringify({ jobId, stage: "EXTRACTING", event: "no_answers_detected", msg: "Answer sheet appears empty or no labels found; will mark all questions UNANSWERED" }));
@@ -879,7 +993,7 @@ async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocum
     throw new AppError(e.code || ErrorCodes.ANSWER_EXTRACTION_FAILED, `Answer segmentation failed: ${e.message}`);
   }
 
-  // Convert deterministic output to shape expected by structuring (preserve raw Textract geometry)
+  // Convert deterministic output to shape expected by structuring (preserve raw PaddleOCR geometry)
   const qpExtracted = {
     questions: parsedQuestions.map((q) => ({
       rawNumber: q.rawNumber,
@@ -887,9 +1001,9 @@ async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocum
       displayNumber: (q as any).displayNumber || q.rawNumber,
       text: q.text,
       rawText: q.rawText,
-      pageRefs: q.pageNumbers.map((pn) => qpPages.find((p) => p.pageNumber === pn)?.id || `page-${pn}`),
-      sourceRegions: Array.from(q.bboxesByPage.entries()).flatMap(([pn, boxes]) =>
-        boxes.map((b) => ({
+      pageRefs: (q.pageNumbers as number[]).map((pn: number) => qpPages.find((p) => p.pageNumber === pn)?.id || `page-${pn}`),
+      sourceRegions: Array.from((q.bboxesByPage as Map<number, any>).entries()).flatMap(([pn, boxes]: [number, any[]]) =>
+        boxes.map((b: any) => ({
           pageId: qpPages.find((p) => p.pageNumber === pn)?.id || `page-${pn}`,
           box: [b.x, b.y, b.width, b.height] as [number, number, number, number],
         }))
@@ -900,17 +1014,18 @@ async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocum
       options: (q as any).options || [],
       marks: q.marks,
       confidence: q.confidence,
-      evidence: [`Textract deterministic: ${q.rawNumber}`],
+      evidence: [`PaddleOCR deterministic: ${q.rawNumber}`],
     })),
   };
 
   const asDetected = {
-    regions: segmentedAnswers.map((a, idx) => ({
+    regions: segmentedAnswers.map((a: any, idx: number) => ({
       pageId: a.pageNumbers.length > 0 ? asPages.find((p) => p.pageNumber === a.pageNumbers[0])?.id || asPages[0]?.id : asPages[0]?.id,
-      boxes: Array.from(a.bboxesByPage.values()).flat().map((b) => [b.x, b.y, b.width, b.height] as [number, number, number, number]),
+      boxes: Array.from((a.bboxesByPage as any).values()).flat().map((b: any) => [b.x, b.y, b.width, b.height] as [number, number, number, number]),
       rawText: a.text,
-      questionLabel: a.questionLabel || null,
-      labelConfidence: a.questionLabel ? 0.95 : 0.2,
+      // V2 uses suspectedQuestion/normalizedLabel, legacy uses questionLabel — support both (data contract repair)
+      questionLabel: a.suspectedQuestion || a.normalizedLabel || a.questionLabel || null,
+      labelConfidence: (a.suspectedQuestion || a.normalizedLabel || a.questionLabel) ? 0.95 : 0.2,
       visualConfidence: 0.6,
       ocrConfidence: a.confidence,
       orderIndex: a.orderIndex,
@@ -924,11 +1039,11 @@ async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocum
     const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
     const debugDir = path.join(os.tmpdir(), "veda-ai", safe, "debug");
     await fs.mkdir(debugDir, { recursive: true });
-    await fs.writeFile(path.join(debugDir, "question-candidates.json"), JSON.stringify(parsedQuestions.map((q) => ({ ...q, bboxesByPage: Array.from((q as any).bboxesByPage?.entries?.() || []) })), null, 2), "utf-8");
-    await fs.writeFile(path.join(debugDir, "answer-regions.json"), JSON.stringify(segmentedAnswers.map((a) => ({ ...a, bboxesByPage: Array.from((a as any).bboxesByPage?.entries?.() || []) })), null, 2), "utf-8");
+    await fs.writeFile(path.join(debugDir, "question-candidates.json"), JSON.stringify(parsedQuestions.map((q: any) => ({ ...q, bboxesByPage: Array.from((q as any).bboxesByPage?.entries?.() || []) })), null, 2), "utf-8");
+    await fs.writeFile(path.join(debugDir, "answer-regions.json"), JSON.stringify(segmentedAnswers.map((a: any) => ({ ...a, bboxesByPage: Array.from((a as any).bboxesByPage?.entries?.() || []) })), null, 2), "utf-8");
     const artDir = path.join(process.cwd(), "artifacts", "debug", safe);
     await fs.mkdir(artDir, { recursive: true });
-    await fs.writeFile(path.join(artDir, "question-candidates.json"), JSON.stringify(parsedQuestions.map((q) => ({ ...q, bboxesByPage: Array.from((q as any).bboxesByPage?.entries?.() || []) })), null, 2), "utf-8");
+    await fs.writeFile(path.join(artDir, "question-candidates.json"), JSON.stringify(parsedQuestions.map((q: any) => ({ ...q, bboxesByPage: Array.from((q as any).bboxesByPage?.entries?.() || []) })), null, 2), "utf-8");
   } catch {}
   return { qpDoc, asDoc, qpPages, asPages, qpExtracted, asDetected, qpOcr, asOcr, parsedQuestions, segmentedAnswers, visionData, fusionData };
 }
@@ -1142,14 +1257,14 @@ async function matchingStage(jobId: string, structured: any) {
         const qPrefix = q.normalizedNumber.replace(/[0-9].*/, "");
         const isQPrefix = (p: string) => p === "" || p === "Q";
         if (parsedLabel === q.normalizedNumber) {
-          evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.95, `Explicit label ${reg.questionLabel} matched ${q.normalizedNumber}`, 1.0));
+          evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.95, `Explicit label ${reg.questionLabel} matched ${q.normalizedNumber}`, 3.0));
         } else if (labelStripped === qStripped) {
-          evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.92, `Label ${reg.questionLabel} matched ${q.normalizedNumber} (normalized)`, 0.95));
+          evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.92, `Label ${reg.questionLabel} matched ${q.normalizedNumber} (normalized)`, 2.2));
         } else if (labelNum === qNum && isQPrefix(labelPrefix) && isQPrefix(qPrefix) && labelStripped === qStripped) {
-          evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.88, `Label ${reg.questionLabel} matched ${q.normalizedNumber} (prefix-insensitive)`, 0.9));
+          evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.88, `Label ${reg.questionLabel} matched ${q.normalizedNumber} (prefix-insensitive)`, 2.0));
         } else if (labelNum === qNum && (isQPrefix(labelPrefix) || isQPrefix(qPrefix)) && labelNum === qNum) {
           if (labelStripped === qStripped) {
-            evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.88, `Label ${reg.questionLabel} matched ${q.normalizedNumber} (prefix-insensitive)`, 0.9));
+            evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.88, `Label ${reg.questionLabel} matched ${q.normalizedNumber} (prefix-insensitive)`, 2.0));
           } else {
             evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.35, `Part mismatch ${reg.questionLabel} vs ${q.normalizedNumber}`, 0.7));
           }

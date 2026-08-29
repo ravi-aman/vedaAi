@@ -1,4 +1,7 @@
 import { z } from "zod";
+import * as dotenv from "dotenv";
+// Load .env for tsx scripts (next dev loads automatically, but tsx does not)
+try { dotenv.config(); } catch {}
 
 const OPENROUTER_DEFAULT_MODEL = "qwen/qwen3-vl-32b-instruct";
 const OPENROUTER_DEFAULT_BASE = "https://openrouter.ai/api/v1";
@@ -39,8 +42,18 @@ const envSchema = z.object({
   EXTRACT_TIMEOUT_MS: z.coerce.number().default(60000),
   DETECT_TIMEOUT_MS: z.coerce.number().default(60000),
   MAPPING_TIMEOUT_MS: z.coerce.number().default(30000),
-  // OCR — Amazon Textract (async PDF)
-  OCR_PROVIDER: z.enum(["textract", "mock"]).default("textract"),
+  // OCR — Local PaddleOCR (PP-StructureV3) or legacy Textract
+  OCR_PROVIDER: z.enum(["textract", "mock", "local", "paddleocr"]).default("local"),
+  // Local OCR (PaddleOCR) settings
+  LOCAL_OCR_ENGINE: z.string().default("paddleocr"),
+  LOCAL_OCR_PIPELINE: z.string().default("pp_structure_v3"),
+  LOCAL_OCR_DEVICE: z.string().default("cpu"),
+  LOCAL_OCR_CONCURRENCY: z.coerce.number().default(2),
+  LOCAL_OCR_LANGUAGE: z.string().default("en"),
+  LOCAL_OCR_VERSION: z.string().default("PP-OCRv5"),
+  LOCAL_OCR_PYTHON: z.string().default("python"),
+  LOCAL_OCR_TIMEOUT_MS: z.coerce.number().default(600000),
+  // Legacy Textract (deprecated, keep for migration period)
   AWS_REGION: z.string().default("us-east-1"),
   AWS_ACCESS_KEY_ID: z.string().optional(),
   AWS_SECRET_ACCESS_KEY: z.string().optional(),
@@ -143,7 +156,7 @@ export function isAwsOcrConfigured(): boolean {
 
 export function requireAwsOcrConfig(): void {
   const cfg = getConfig() as any;
-  if (cfg.OCR_PROVIDER === "mock") return;
+  if (cfg.OCR_PROVIDER === "mock" || cfg.OCR_PROVIDER === "local" || cfg.OCR_PROVIDER === "paddleocr") return;
   const missing: string[] = [];
   if (!cfg.AWS_REGION) missing.push("AWS_REGION");
   if (!cfg.AWS_S3_BUCKET) missing.push("AWS_S3_BUCKET");

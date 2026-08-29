@@ -465,3 +465,6 @@ export function segmentAnswersFromTextract(
   // We keep as is but log warning; actual fix is label detection, not splitting here
   return result;
 }
+
+// Alias for PaddleOCR
+export const segmentAnswersFromOcr = segmentAnswersFromTextract;

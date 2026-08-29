@@ -14,7 +14,7 @@ export interface RoutingDecision {
   estimatedDifficulty: "easy" | "moderate" | "hard";
 }
 
-export function shouldInvokeVision(ocr: OcrDocumentResult, opts?: { forceVision?: boolean }): RoutingDecision {
+export function shouldInvokeVision(ocr: OcrDocumentResult, opts?: { forceVision?: boolean; kind?: "questionPaper" | "answerSheet" }): RoutingDecision {
   if (opts?.forceVision) {
     return { useVision: true, reason: "forceVision flag", confidence: 1, estimatedDifficulty: "hard" };
   }
@@ -23,7 +23,15 @@ export function shouldInvokeVision(ocr: OcrDocumentResult, opts?: { forceVision?
   const totalLines = pages.reduce((a, p) => a + (p.lines?.length || 0), 0);
   const avgConfidence = pages.length ? pages.reduce((a, p) => a + (p.confidence || 0.9), 0) / pages.length : 0.9;
   const hasLowConfidenceLines = pages.some((p) => (p.lines || []).some((l) => (l.confidence || 1) < 0.6));
-  const hasHandwritingSignals = pages.some((p) => p.text.length < 50 && totalLines < 5); // sparse text may be diagram-only
+  // Handwriting signals: for answerSheet, handwriting is expected — check avgConf <0.85 or many lines with low conf or sparse
+  const hasHandwritingSignals = opts?.kind === "answerSheet"
+    ? avgConfidence < 0.85 || hasLowConfidenceLines || totalLines > 20
+    : pages.some((p) => p.text.length < 50 && totalLines < 5); // sparse text may be diagram-only
+
+  // For answerSheet, handwriting is inherently difficult — Vision must run (Phase 3,18)
+  if (opts?.kind === "answerSheet" && hasHandwritingSignals) {
+    return { useVision: true, reason: `answerSheet handwriting: avgConf ${avgConfidence.toFixed(2)}, lowConf=${hasLowConfidenceLines}, lines=${totalLines}`, confidence: 0.8, estimatedDifficulty: "hard" };
+  }
 
   // Easy: high confidence, many lines, structured text
   if (avgConfidence > 0.85 && totalLines > 20 && !hasLowConfidenceLines) {

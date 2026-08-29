@@ -1,0 +1,201 @@
+OCR_PROVIDER local VISION auto
+QP 2170769 AS 11011347
+created job b8eb9379-eead-4dd8-800b-3e9a802b4b2c
+uploaded questionPaper 27 pages docId cd7a0221-101a-4a33-94d0-b26cac5295e5 fileId ad9b59d0-4e19-4853-b91d-ac85ae7febd2
+uploaded answerSheet 31 pages docId 987c26b2-be43-43e8-9e2a-0b12fa294dce fileId 9d5a4746-643f-469e-88de-9d2fe4526c77
+job before start UPLOADED UPLOADED
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"START","event":"start_processing"}
+poll 0s stage=VALIDATING status=VALIDATING error= 
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"OCR","provider":"paddleocr","pipeline":"pp_structure_v3","engine":"paddleocr","event":"paddleocr_start","requestedProvider":"local"}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"OCR","engine":"paddleocr","event":"local_start","qpPages":27,"asPages":31}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"OCR","engine":"paddleocr","event":"render_mupdf","kind":"questionPaper","pages":27,"sample":{"pageNumber":1,"imagePath":"C:\\Users\\Dell\\AppData\\Local\\Temp\\veda-ai\\b8eb9379-eead-4dd8-800b-3e9a802b4b2c\\paddle-images\\questionPaper\\page-001.png","width":893,"height":1263}}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"OCR","engine":"paddleocr","event":"local_process_start","kind":"questionPaper","pages":27,"sample":{"pageNumber":1,"imagePath":"C:\\Users\\Dell\\AppData\\Local\\Temp\\veda-ai\\b8eb9379-eead-4dd8-800b-3e9a802b4b2c\\paddle-images\\questionPaper\\page-001.png","width":893,"height":1263}}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"OCR","engine":"paddleocr","event":"worker_spawn_start","kind":"questionPaper","pages":27,"manifestPath":"C:\\Users\\Dell\\AppData\\Local\\Temp\\veda-ai\\b8eb9379-eead-4dd8-800b-3e9a802b4b2c\\paddle\\questionPaper-manifest.json","outputDir":"C:\\Users\\Dell\\AppData\\Local\\Temp\\veda-ai\\b8eb9379-eead-4dd8-800b-3e9a802b4b2c\\paddle\\questionPaper-output","pythonPath":"python"}
+[paddle_worker stderr] C:\Python311\Lib\site-packages\requests\__init__.py:113: RequestsDependencyWarning: urllib3 (2.5.0) or chardet (7.6.0)/charset_normalizer (3.4.4) doesn't match a supported version!
+[paddle_worker stderr]   warnings.warn(
+poll 5s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] imported paddleocr in 4328ms mem 560.0MB
+[paddle_worker stderr] E:\vedaAi\scripts\paddle_ocr_worker.py:55: UserWarning: `lang` and `ocr_version` will be ignored when model names or model directories are not `None`.
+[paddle_worker stderr]   ocr = PaddleOCR(**ocr_kwargs)
+[paddle_worker stderr] INFO: Could not find files for the given pattern(s).
+[paddle_worker stderr] C:\Python311\Lib\site-packages\paddle\utils\cpp_extension\extension_utils.py:718: UserWarning: No ccache found. Please be aware that recompiling all source files may be required. You can download and install ccache from: https://github.com/ccache/ccache/blob/master/doc/INSTALL.md
+[paddle_worker stderr]   warnings.warn(warning_message)
+[paddle_worker stderr] Creating model: ('PP-OCRv5_mobile_det', None, None)
+[paddle_worker stderr] Model files already exist. Using cached files. To redownload, please delete the directory manually: `C:\Users\Dell\.paddlex\official_models\PP-OCRv5_mobile_det`.
+[paddle_worker stderr] WARNING: Logging before InitGoogleLogging() is written to STDERR
+[paddle_worker stderr] I0829 16:52:04.312274 29676 onednn_context.cc:81] oneDNN v3.6.2
+[paddle_worker stderr] Creating model: ('en_PP-OCRv5_mobile_rec', None, None)
+[paddle_worker stderr] Model files already exist. Using cached files. To redownload, please delete the directory manually: `C:\Users\Dell\.paddlex\official_models\en_PP-OCRv5_mobile_rec`.
+[paddle_worker stderr] [paddle_worker] PaddleOCR initialized in 1374ms mem 740.3MB
+[paddle_worker stderr] [paddle_worker] processing 27 pages for b8eb9379-eead-4dd8-800b-3e9a802b4b2c questionPaper
+poll 10s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 1 dur 3208ms texts 49 polys 49
+[paddle_worker stderr] [paddle_worker] page 2 dur 2254ms texts 43 polys 43
+poll 15s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 3 dur 2851ms texts 50 polys 50
+[paddle_worker stderr] [paddle_worker] page 4 dur 2619ms texts 63 polys 63
+poll 20s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 5 dur 2768ms texts 70 polys 70
+[paddle_worker stderr] [paddle_worker] page 6 dur 2157ms texts 49 polys 49
+poll 25s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 7 dur 2677ms texts 56 polys 56
+[paddle_worker stderr] [paddle_worker] page 8 dur 2365ms texts 52 polys 52
+poll 30s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 9 dur 3095ms texts 56 polys 56
+[paddle_worker stderr] [paddle_worker] page 10 dur 2611ms texts 54 polys 54
+poll 35s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 11 dur 3451ms texts 64 polys 64
+[paddle_worker stderr] [paddle_worker] page 12 dur 2499ms texts 39 polys 39
+poll 40s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 13 dur 3288ms texts 49 polys 49
+[paddle_worker stderr] [paddle_worker] page 14 dur 1968ms texts 37 polys 37
+poll 45s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 15 dur 2368ms texts 46 polys 46
+[paddle_worker stderr] [paddle_worker] page 16 dur 2460ms texts 41 polys 41
+poll 50s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 17 dur 2845ms texts 47 polys 47
+poll 55s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 18 dur 2885ms texts 68 polys 68
+[paddle_worker stderr] [paddle_worker] page 19 dur 3538ms texts 69 polys 69
+poll 60s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 20 dur 2678ms texts 57 polys 57
+[paddle_worker stderr] [paddle_worker] page 21 dur 3209ms texts 60 polys 60
+poll 65s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 22 dur 2352ms texts 48 polys 48
+[paddle_worker stderr] [paddle_worker] page 23 dur 2617ms texts 56 polys 56
+poll 70s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 24 dur 2431ms texts 46 polys 46
+poll 75s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 25 dur 3070ms texts 52 polys 52
+[paddle_worker stderr] [paddle_worker] page 26 dur 1701ms texts 26 polys 26
+[paddle_worker stderr] [paddle_worker] page 27 dur 2019ms texts 29 polys 29
+[paddle_worker stderr] [paddle_worker] completed 27 pages total 77819ms avg 2666ms peak 1290.7MB
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"OCR","engine":"paddleocr","event":"worker_completed","kind":"questionPaper","durationMs":78743,"summary":{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","kind":"questionPaper","engine":"paddleocr","ocrVersion":"PP-OCRv5","lang":"en","device":"cpu","pages":27,"totalMs":77819,"avgPageMs":2666,"minPageMs":1701,"maxPageMs":3538,"totalTexts":1376,"totalPolys":1376,"peakMemoryMb":1290.7,"completedAt":"2026-08-29T11:23:16Z"}}
+poll 80s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"OCR","engine":"paddleocr","event":"normalized","kind":"questionPaper","pages":27,"totalLines":1376,"totalBlocks":69,"totalDuration":79302}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"OCR","engine":"paddleocr","event":"local_process_ok","kind":"questionPaper","pages":27,"durationMs":79302,"avgPerPage":2937}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"OCR","engine":"paddleocr","event":"render_mupdf","kind":"answerSheet","pages":31,"sample":{"pageNumber":1,"imagePath":"C:\\Users\\Dell\\AppData\\Local\\Temp\\veda-ai\\b8eb9379-eead-4dd8-800b-3e9a802b4b2c\\paddle-images\\answerSheet\\page-001.png","width":1263,"height":893}}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"OCR","engine":"paddleocr","event":"local_process_start","kind":"answerSheet","pages":31,"sample":{"pageNumber":1,"imagePath":"C:\\Users\\Dell\\AppData\\Local\\Temp\\veda-ai\\b8eb9379-eead-4dd8-800b-3e9a802b4b2c\\paddle-images\\answerSheet\\page-001.png","width":1263,"height":893}}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"OCR","engine":"paddleocr","event":"worker_spawn_start","kind":"answerSheet","pages":31,"manifestPath":"C:\\Users\\Dell\\AppData\\Local\\Temp\\veda-ai\\b8eb9379-eead-4dd8-800b-3e9a802b4b2c\\paddle\\answerSheet-manifest.json","outputDir":"C:\\Users\\Dell\\AppData\\Local\\Temp\\veda-ai\\b8eb9379-eead-4dd8-800b-3e9a802b4b2c\\paddle\\answerSheet-output","pythonPath":"python"}
+[paddle_worker stderr] C:\Python311\Lib\site-packages\requests\__init__.py:113: RequestsDependencyWarning: urllib3 (2.5.0) or chardet (7.6.0)/charset_normalizer (3.4.4) doesn't match a supported version!
+[paddle_worker stderr]   warnings.warn(
+poll 85s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] imported paddleocr in 4410ms mem 559.5MB
+[paddle_worker stderr] E:\vedaAi\scripts\paddle_ocr_worker.py:55: UserWarning: `lang` and `ocr_version` will be ignored when model names or model directories are not `None`.
+[paddle_worker stderr]   ocr = PaddleOCR(**ocr_kwargs)
+[paddle_worker stderr] INFO: Could not find files for the given pattern(s).
+[paddle_worker stderr] C:\Python311\Lib\site-packages\paddle\utils\cpp_extension\extension_utils.py:718: UserWarning: No ccache found. Please be aware that recompiling all source files may be required. You can download and install ccache from: https://github.com/ccache/ccache/blob/master/doc/INSTALL.md
+[paddle_worker stderr]   warnings.warn(warning_message)
+[paddle_worker stderr] Creating model: ('PP-OCRv5_mobile_det', None, None)
+[paddle_worker stderr] Model files already exist. Using cached files. To redownload, please delete the directory manually: `C:\Users\Dell\.paddlex\official_models\PP-OCRv5_mobile_det`.
+poll 90s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] WARNING: Logging before InitGoogleLogging() is written to STDERR
+[paddle_worker stderr] I0829 16:53:27.808156 30172 onednn_context.cc:81] oneDNN v3.6.2
+[paddle_worker stderr] Creating model: ('en_PP-OCRv5_mobile_rec', None, None)
+[paddle_worker stderr] Model files already exist. Using cached files. To redownload, please delete the directory manually: `C:\Users\Dell\.paddlex\official_models\en_PP-OCRv5_mobile_rec`.
+[paddle_worker stderr] [paddle_worker] PaddleOCR initialized in 1457ms mem 741.4MB
+[paddle_worker stderr] [paddle_worker] processing 31 pages for b8eb9379-eead-4dd8-800b-3e9a802b4b2c answerSheet
+[paddle_worker stderr] [paddle_worker] page 1 dur 749ms texts 2 polys 2
+[paddle_worker stderr] [paddle_worker] page 2 dur 1875ms texts 58 polys 58
+[paddle_worker stderr] [paddle_worker] page 3 dur 1486ms texts 33 polys 33
+poll 95s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 4 dur 1232ms texts 20 polys 20
+[paddle_worker stderr] [paddle_worker] page 5 dur 1403ms texts 29 polys 29
+[paddle_worker stderr] [paddle_worker] page 6 dur 1531ms texts 22 polys 22
+poll 100s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 7 dur 2018ms texts 49 polys 49
+[paddle_worker stderr] [paddle_worker] page 8 dur 1775ms texts 34 polys 34
+[paddle_worker stderr] [paddle_worker] page 9 dur 1897ms texts 35 polys 35
+poll 105s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 10 dur 1673ms texts 40 polys 40
+[paddle_worker stderr] [paddle_worker] page 11 dur 1579ms texts 25 polys 25
+[paddle_worker stderr] [paddle_worker] page 12 dur 1498ms texts 25 polys 25
+poll 110s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 13 dur 1771ms texts 45 polys 45
+[paddle_worker stderr] [paddle_worker] page 14 dur 1632ms texts 25 polys 25
+[paddle_worker stderr] [paddle_worker] page 15 dur 1666ms texts 38 polys 38
+poll 115s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 16 dur 1519ms texts 34 polys 34
+[paddle_worker stderr] [paddle_worker] page 17 dur 1845ms texts 47 polys 47
+[paddle_worker stderr] [paddle_worker] page 18 dur 1061ms texts 24 polys 24
+poll 120s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 19 dur 1582ms texts 37 polys 37
+[paddle_worker stderr] [paddle_worker] page 20 dur 1942ms texts 45 polys 45
+[paddle_worker stderr] [paddle_worker] page 21 dur 1532ms texts 33 polys 33
+poll 125s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 22 dur 2353ms texts 68 polys 68
+[paddle_worker stderr] [paddle_worker] page 23 dur 1910ms texts 33 polys 33
+[paddle_worker stderr] [paddle_worker] page 24 dur 1345ms texts 23 polys 23
+poll 130s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 25 dur 1679ms texts 33 polys 33
+[paddle_worker stderr] [paddle_worker] page 26 dur 1575ms texts 33 polys 33
+[paddle_worker stderr] [paddle_worker] page 27 dur 1718ms texts 24 polys 24
+poll 135s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 28 dur 2062ms texts 55 polys 55
+[paddle_worker stderr] [paddle_worker] page 29 dur 1545ms texts 32 polys 32
+[paddle_worker stderr] [paddle_worker] page 30 dur 1870ms texts 47 polys 47
+poll 140s stage=OCR_SUBMITTED status=OCR_SUBMITTED error= 
+[paddle_worker stderr] [paddle_worker] page 31 dur 609ms texts 7 polys 7
+[paddle_worker stderr] [paddle_worker] completed 31 pages total 55909ms avg 1610ms peak 1240.2MB
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"OCR","engine":"paddleocr","event":"worker_completed","kind":"answerSheet","durationMs":56818,"summary":{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","kind":"answerSheet","engine":"paddleocr","ocrVersion":"PP-OCRv5","lang":"en","device":"cpu","pages":31,"totalMs":55909,"avgPageMs":1610,"minPageMs":609,"maxPageMs":2353,"totalTexts":1055,"totalPolys":1055,"peakMemoryMb":1240.2,"completedAt":"2026-08-29T11:24:18Z"}}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"OCR","engine":"paddleocr","event":"normalized","kind":"answerSheet","pages":31,"totalLines":1023,"totalBlocks":93,"totalDuration":57458}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"OCR","engine":"paddleocr","event":"local_process_ok","kind":"answerSheet","pages":31,"durationMs":57458,"avgPerPage":1853}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"OCR","engine":"paddleocr","event":"local_completed","qpPages":27,"asPages":31}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"VISION","event":"skipped_no_provider","provider":"auto"}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"FUSION","event":"completed","qpVisionState":"VISION_FAILED","asVisionState":"VISION_FAILED","qpWarnings":0,"asWarnings":0,"qpHints":0,"asHints":0}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"EXTRACTING","event":"document_role","qpRole":"QUESTION_PAPER","qpEvidence":["first page matches question paper indicator: maximum marks"],"asRole":"ANSWER_SHEET","asEvidence":["filename contains answer sheet: handwrittern_answer_sheet_physics_1.pdf"]}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"EXTRACTING","event":"deterministic_start","qpPages":27,"asPages":31}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"EXTRACTING","event":"questions_v2","duration":23,"qCount":194,"topLevel":33,"sections":6}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"EXTRACTING","event":"v2_validation","valid":true,"errors":[],"warnings":["MANY_SUBPARTS","MANY_SUBPARTS","MANY_SUBPARTS","MANY_SUBPARTS"],"isCorruption":false}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"EXTRACTING","event":"v2_artifacts_written","dir":"artifacts/b8eb9379-eead-4dd8-800b-3e9a802b4b2c/question-paper-debug","pages":27}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"EXTRACTING","event":"questions_parsed","duration":83,"qCount":194}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"EXTRACTING","event":"v2_bypass_old_validator","qCount":194}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"EXTRACTING","event":"answers_segmented","duration":9,"aCount":3}
+{"jobId":"b8eb9379-eead-4dd8-800b-3e9a802b4b2c","stage":"VALIDATING_RESULT","event":"golden_validation_pass","topLevel":33,"total":194,"decisions":196}
+poll 145s stage=COMPLETED status=COMPLETED error= 
+final job {
+  "id": "b8eb9379-eead-4dd8-800b-3e9a802b4b2c",
+  "createdAt": "2026-08-29T11:21:56.244Z",
+  "updatedAt": "2026-08-29T11:24:20.197Z",
+  "status": "COMPLETED",
+  "currentStage": "COMPLETED",
+  "guestSessionId": null,
+  "userId": null,
+  "progress": {
+    "stageStates": {
+      "CREATED": "completed",
+      "UPLOADING": "pending",
+      "UPLOADED": "pending",
+      "VALIDATING": "completed",
+      "PREPROCESSING": "completed",
+      "OCR_SUBMITTED": "completed",
+      "OCR_PROCESSING": "completed",
+      "OCR_COMPLETED": "completed",
+      "OCR_FAILED": "pending",
+      "EXTRACTING": "completed",
+      "STRUCTURING": "completed",
+      "MATCHING": "completed",
+      "LOCALIZING": "completed",
+      "VALIDATING_RESULT": "completed",
+      "COMPLETED": "completed",
+      "FAILED": "pending",
+      "CANCELLED": "pending",
+      "VISION": "completed",
+      "FUSION": "completed"
+    }
+  },
+  "pipelineVersion": "0.2.0",
+  "modelVersion": "qwen/qwen3-vl-32b-instruct",
+  "questionPaperFileId": "ad9b59d0-4e19-4853-b91d-ac85ae7febd2",
+  "questionPaperDocId": "cd7a0221-101a-4a33-94d0-b26cac5295e5",
+  "answerSheetFileId": "9d5a4746-643f-469e-88de-9d2fe4526c77",
+  "answerSheetDocId": "987c26b2-be43-43e8-9e2a-0b12fa294dce",
+  "ocrStartedAt": "2026-08-29T11:21:57.714Z",
+  "ocrAttempt": 1,
+  "ocrCompletedAt": "2026-08-29T11:24:19.794Z",
+  "ocrPageCount": 58
+}
+ocr qp pages 27 as 31 provider paddleocr
+result questions 194 answers 4 decisions 196
+artifacts check, persistence COMPLETED
+DONE final COMPLETED COMPLETED

@@ -18,8 +18,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
   let files: Record<string, string> = {};
   for (const dir of [debugDir, artDir]) {
     try {
-      const qp = path.join(dir, "questionPaper-textract.json");
-      const as = path.join(dir, "answerSheet-textract.json");
+      const qpCandidates = ["questionPaper-paddle.json", "questionPaper-paddle-normalized.json", "questionPaper-textract.json"];
+      const asCandidates = ["answerSheet-paddle.json", "answerSheet-paddle-normalized.json", "answerSheet-textract.json"];
+      let qp: string | null = null; let as: string | null = null;
+      for (const n of qpCandidates) { const p = path.join(dir, n); try { await fs.access(p); qp = p; break; } catch {} }
+      for (const n of asCandidates) { const p = path.join(dir, n); try { await fs.access(p); as = p; break; } catch {} }
+      if (!qp) qp = path.join(dir, "questionPaper-paddle.json");
+      if (!as) as = path.join(dir, "answerSheet-paddle.json");
       try {
         await fs.access(qp);
         files[`file_${dir.includes("artifacts") ? "artifacts" : "tmp"}_questionPaper`] = qp;
@@ -34,7 +39,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
   // Build summary
   const summary = {
     jobId,
-    ocrProvider: (process.env.OCR_PROVIDER || "textract"),
+    ocrProvider: (process.env.OCR_PROVIDER || "local"),
     qpOcr: mem?.qpOcr ? { pages: mem.qpOcr.pages.length, totalLines: mem.qpOcr.pages.reduce((a, p) => a + p.lines.length, 0), samplePage: mem.qpOcr.pages[0] } : null,
     asOcr: mem?.asOcr ? { pages: mem.asOcr.pages.length, totalLines: mem.asOcr.pages.reduce((a, p) => a + p.lines.length, 0), samplePage: mem.asOcr.pages[0] } : null,
     fullQpOcr: mem?.qpOcr || null,
@@ -52,10 +57,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ jobI
   const url = new URL(req.url);
   const download = url.searchParams.get("download");
   if (download === "questionPaper" && mem?.qpOcr) {
-    return new NextResponse(JSON.stringify(mem.qpOcr, null, 2), { headers: { "Content-Type": "application/json", "Content-Disposition": `attachment; filename="${jobId}-questionPaper-textract.json"` } });
+    return new NextResponse(JSON.stringify(mem.qpOcr, null, 2), { headers: { "Content-Type": "application/json", "Content-Disposition": `attachment; filename="${jobId}-questionPaper-paddle.json"` } });
   }
   if (download === "answerSheet" && mem?.asOcr) {
-    return new NextResponse(JSON.stringify(mem.asOcr, null, 2), { headers: { "Content-Type": "application/json", "Content-Disposition": `attachment; filename="${jobId}-answerSheet-textract.json"` } });
+    return new NextResponse(JSON.stringify(mem.asOcr, null, 2), { headers: { "Content-Type": "application/json", "Content-Disposition": `attachment; filename="${jobId}-answerSheet-paddle.json"` } });
   }
 
   return NextResponse.json(summary);

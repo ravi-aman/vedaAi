@@ -59,10 +59,20 @@ export interface OcrDocumentResult {
   documentId: string;
   kind: "questionPaper" | "answerSheet";
   pages: OcrPageResult[];
-  provider: "amazon-textract";
+  provider: "amazon-textract" | "paddleocr" | "mock";
   providerVersion: string;
   operationId: string;
   completedAt: string;
+}
+
+// New local OCR provider interface (provider-independent canonical)
+export interface LocalOcrProvider {
+  processDocument(input: {
+    jobId: string;
+    documentId: string;
+    kind: "questionPaper" | "answerSheet";
+    pages: { pageNumber: number; imagePath: string; width: number; height: number }[];
+  }): Promise<OcrDocumentResult>;
 }
 
 export interface OcrOperationStatus {

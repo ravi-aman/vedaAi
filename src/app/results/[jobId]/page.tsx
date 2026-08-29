@@ -251,7 +251,9 @@ export default function ResultsPage() {
   const highlights = selected?.highlightRegions || [];
   const activePageId = highlights[0]?.pageId;
   const activeQuestionLabel = selected?.question?.normalizedNumber || selected?.question?.rawNumber || "";
-  const sortedResults = [...result.questionResults].sort((a, b) => a.question.orderIndex - b.question.orderIndex);
+  // Only show top-level questions as cards (depth 0, no parent) — subparts/options are children, not separate cards (Constraint 14)
+  const topLevelResults = result.questionResults.filter((qr) => (qr.question.depth === 0 || qr.question.depth == null) && !qr.question.parentQuestionId);
+  const sortedResults = [...(topLevelResults.length ? topLevelResults : result.questionResults)].sort((a, b) => a.question.orderIndex - b.question.orderIndex);
   const handleExpandAll = () => setExpandAll((v) => !v);
 
   return (

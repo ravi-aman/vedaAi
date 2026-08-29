@@ -1,0 +1,74 @@
+src\components\upload\UploadCard.tsx:140 [38] <span className="absolute w-2.5 h-2.5 rounded-full bg-[#F1502F]/80" style={{ top: "38%", right: "1%" }} />
+src\components\viewer\AnswerSheetViewer.tsx:364 [pageNumber ===] const docPage = pages.find((p) => p.pageNumber === pageNumber);
+src\components\viewer\PdfViewer.tsx:214 [pageNumber ===] const docPage = pages.find((p) => p.pageNumber === pageNumber);
+src\lib\ai\providers\mock.ts:75 [label ===] const isMatch = ag.label === q.normalizedNumber;
+src\lib\jobs\runner.ts:64 [pageNumber ===] const byNumber = pages.find((p) => p.pageNumber === num);
+src\lib\jobs\runner.ts:270 [pageNumber ===] const match = existing.find((e) => e.pageNumber === p.pageNumber);
+src\lib\jobs\runner.ts:831 [33] 33 // validation ground truth for THIS paper, not hardcode in solver
+src\lib\jobs\runner.ts:1004 [pageNumber ===] pageRefs: (q.pageNumbers as number[]).map((pn: number) => qpPages.find((p) => p.pageNumber === pn)?.id || `page-${pn}`),
+src\lib\jobs\runner.ts:1007 [pageNumber ===] pageId: qpPages.find((p) => p.pageNumber === pn)?.id || `page-${pn}`,
+src\lib\jobs\runner.ts:1023 [pageNumber ===] pageId: a.pageNumbers.length > 0 ? asPages.find((p) => p.pageNumber === a.pageNumbers[0])?.id || asPages[0]?.id : asPages[0]?.id,
+src\lib\jobs\runner.ts:1131 [pageNumber ===] const pageIdForPn = asPages.find((p: any) => p.pageNumber === pn)?.id || resolvePageId(r.pageId, asPages);
+src\lib\jobs\runner.ts:1269 [0.35] evidence.push(buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.35, `Part mismatch ${reg.questionLabel} vs ${q.normalizedNumber}`, 0.7));
+src\lib\jobs\runner.ts:1352 [0.35] buildEvidence("NEIGHBOR_CONTEXT", "matching", 0.35, `Global conflict: answer ${chosenId} already assigned — no alternative above threshold`, 0.9),
+src\lib\jobs\runner.ts:1370 [0.35] // Merge to one coherent box per page; if spread >0.35 height, keep separate (avoid giant blank)
+src\lib\structure\answer-graph-builder.ts:81 [label ===] const visionMatch = visionHints.find((v) => v.blockIds?.includes(text) || v.labelHint === t || v.label === t);
+src\lib\structure\answer-graph-builder.ts:102 [33] if (n < 1 || n > 33) continue; // soft, but for this paper 1..33
+src\lib\structure\answer-graph-builder.ts:422 [pageNumber ===] blockCount: allLines.filter((l) => l.pageNumber === pn).length,
+src\lib\structure\answer-segmentation.ts:151 [x>0.07] if (/^\s*\(\s*[A-Da-d]\s*\)/.test(trimmed) && bbox && bbox.x > 0.07) return null;
+src\lib\structure\answer-segmentation.ts:152 [x>0.07] if (/^\s*[A-Da-d]\s*[\)\.\]]/.test(trimmed) && bbox && bbox.x > 0.07 && trimmed.length < 30) {
+src\lib\structure\answer-segmentation.ts:168 [0.35] if (confidence !== undefined && confidence < 0.35 && /^\s*\d+\s*$/.test(trimmed)) return null;
+src\lib\structure\answer-segmentation.ts:326 [normalizedLabel ===] if (current && current.normalizedLabel === normalized) {
+src\lib\structure\answer-segmentation.ts:329 [pageNumber ===] const samePage = line.pageNumber === last.pageNumber;
+src\lib\structure\answer-segmentation.ts:330 [0.35] const nearBottomTop = last.boundingBox.y > 0.50 && line.boundingBox.y < 0.35;
+src\lib\structure\answer-segmentation.ts:382 [pageNumber ===] const samePage = line.pageNumber === last.pageNumber;
+src\lib\structure\answer-segmentation.ts:390 [0.35] const isPageContinuation = !samePage && Math.abs(line.pageNumber - last.pageNumber) === 1 && last.boundingBox.y > 0.55 && line.boundingBox.y < 0.35;
+src\lib\structure\answer-segmentation.ts:445 [normalizedLabel ===] if (s.normalizedLabel === "__unknown__" && s.text.trim().length === 0 && s.lines.length === 1 && s.confidence < 0.6) return false;
+src\lib\structure\document-model.ts:70 [Section A] title: string; // "Section A"
+src\lib\structure\document-model.ts:71 [[1, 16]] range?: [number, number]; // e.g., [1,16] derived from Vision/OCR generic regex, soft
+src\lib\structure\hierarchy-builder.ts:125 [0.35] if (agg > 0.35) {
+src\lib\structure\label-detector.ts:44 [x<0.14] if (x < 0.14) return 0.85;
+src\lib\structure\label-detector.ts:46 [0.35] if (x < 0.35) return 0.2;
+src\lib\structure\label-detector.ts:57 [x>0.84] // Marks at right margin x>0.84 width<0.05
+src\lib\structure\label-detector.ts:58 [x>0.84] if (x > 0.84 && width < 0.05) return 0.9;
+src\lib\structure\label-detector.ts:68 [33] // Section: "Section A" etc. — generic, not hardcode 33
+src\lib\structure\label-detector.ts:237 [1-16] // Generic section ranges, but soft: Section A ideally 1-16, but not hard
+src\lib\structure\label-detector.ts:238 [33] const sectionRanges: Record<string, [number, number]> = { A: [1, 16], B: [17, 21], C: [22, 28], D: [29, 30], E: [31, 33] };
+src\lib\structure\label-detector.ts:277 [label ===] (v) => v.blockIds.includes(block.id) || v.label === pattern.normalizedLabel
+src\lib\structure\label-detector.ts:339 [4(i)] // Low aggregated → likely not a real question (e.g., garbled 4(i) from instructions)
+src\lib\structure\question-extractor-v2.ts:5 [33] * Output: ParsedQuestion[] with provenance, evidence, not hard-coded 33
+src\lib\structure\question-extractor-v2.ts:104 [Section A] // From OCR — generic Section A-E detection
+src\lib\structure\question-extractor-v2.ts:139 [33] // For generic, we don't hardcode 33, but for sections we can use generic ranges from Vision or leave undefined
+src\lib\structure\question-extractor-v2.ts:140 [1-16] // For THIS paper, we know Section A 1-16 etc., but we keep soft
+src\lib\structure\question-extractor-v2.ts:141 [33] const defaultRanges: Record<string, [number, number]> = { A: [1, 16], B: [17, 21], C: [22, 28], D: [29, 30], E: [31, 33] };
+src\lib\structure\question-extractor-v2.ts:238 [pageNumber ===] const isFirstPage = pg.pageNumber === 1;
+src\lib\structure\question-extractor-v2.ts:254 [0.35] // Only keep candidates with aggregatedScore > 0.35 and not HEADER/FOOTER (soft)
+src\lib\structure\question-extractor-v2.ts:286 [0.35] // Filter: keep QUESTION with score >0.4, SUBPART/OPTION with >0.35, INSTRUCTION always (for artifact)
+src\lib\structure\question-extractor-v2.ts:289 [0.35] (candidate.candidateType === "SUBPART" && candidate.aggregatedScore > 0.35) ||
+src\lib\structure\question-parser.ts:156 [x>0.84] // Marks column: x>0.84 (right margin), width small, single digit 1-5 or "2" etc, and not at top/bottom header
+src\lib\structure\question-parser.ts:157 [x>0.84] if (bbox.x > 0.84 && bbox.width < 0.03 && /^\d+$/.test(t) && parseInt(t, 10) >= 1 && parseInt(t, 10) <= 10) return true;
+src\lib\structure\question-parser.ts:194 [0.09] // Options typically x 0.09–0.35 with similar x across cluster
+src\lib\structure\question-parser.ts:195 [x>0.07] const isIndented = !bbox || bbox.x > 0.07;
+src\lib\structure\question-parser.ts:261 [x<0.14] // Strict left margin for question labels — single column expects x <0.14, two-column right allowed at 0.48-0.65 but only if truly two-column page
+src\lib\structure\question-parser.ts:263 [x<0.14] const isLeftMarginStrict = !bbox || bbox.x < 0.14;
+src\lib\structure\question-parser.ts:275 [x<0.14] const isLeftMargin = !bbox || bbox.x < 0.14;
+src\lib\structure\question-parser.ts:363 [38] const leftCount = xs.filter((x) => x < 0.38).length;
+src\lib\structure\question-parser.ts:371 [38] const leftYs = lines.filter((l) => l.boundingBox.x < 0.38).map((l) => l.boundingBox.y);
+src\lib\structure\question-parser.ts:553 [0.09] const isIndented = bbox ? bbox.x > 0.09 : false;
+src\lib\structure\question-parser.ts:724 [label ===] for (const o of q.options) if (!last.options.some((x) => x.label === o.label)) last.options.push(o);
+src\lib\structure\sequence-solver.ts:3 [33] * No hard-coded Roman >8, no hardcode 33, validation only.
+src\lib\structure\sequence-solver.ts:74 [33] // For THIS paper, expected 33, but not hardcoded in solver — just report
+src\lib\structure\sequence-solver.ts:75 [33] // The validator will check 26 vs 33 and fail (Constraint 11)
+src\lib\structure\sequence-solver.ts:77 [33] // No hard 33 in solver logic
+src\lib\structure\sequence-solver.ts:85 [normalizedLabel ===] const parent = deduped.find((p) => p.sourceBlockIds[0] === sp.parentCandidateId || p.normalizedLabel === sp.parentCandidateId);
+src\lib\structure\validator.ts:20 [Section A] // Also check for "Section A - ... 1 to 14" etc
+src\lib\structure\validator.ts:128 [38] if (numericTop.length > 60) warnings.push({ code: "OVER_SEGMENTATION", message: `${numericTop.length} top-level numeric questions — likely over-segmentation (expected ~38)` });
+src\lib\validation\structure-validator.ts:4 [33] * Not hard-coded 33, but uses document-derived invariants; for THIS paper 33 is validation ground truth (Constraint 10)
+src\lib\validation\structure-validator.ts:18 [33] expectedTopLevelFromDocument?: number // e.g., 33 derived from Sections, not hardcode
+src\lib\validation\structure-validator.ts:40 [0.09] // Check if its bbox is at option indent (x 0.09-0.35) — but we already have evidence
+src\lib\validation\structure-validator.ts:102 [33] // For generic, we check if count > 40 (unlikely for school paper) — soft, not hardcode 33
+src\lib\validation\structure-validator.ts:103 [33] // But for THIS paper, expected is 33, so if we get 44, that's explosion
+src\lib\validation\structure-validator.ts:120 [33] // 7. Check for fake 4 with many subparts (specific to previous failure, but generic: if a top has >8 subparts and is not 33-like)
+src\lib\validation\structure-validator.ts:128 [normalizedLabel ===] if (q.normalizedLabel === "4" && subCount >= 8) {
+src\lib\vision\canonical.ts:49 [pageNumber ===] const visionPage = vision?.pages.find((v) => v.pageNumber === pg.pageNumber);
+TOTAL 73

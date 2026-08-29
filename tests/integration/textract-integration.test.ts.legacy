@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect, vi } from "vitest";
 import { MockOcrProvider } from "@/lib/ocr/mock";
 import { normalizeTextractBlocks } from "@/lib/ocr/textract";

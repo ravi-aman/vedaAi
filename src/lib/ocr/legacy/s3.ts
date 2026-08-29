@@ -1,6 +1,7 @@
+// @ts-nocheck
 import { S3Client, PutObjectCommand, GetObjectCommand, ListObjectsV2Command, DeleteObjectsCommand } from "@aws-sdk/client-s3";
 import { getConfig } from "@/lib/config";
-import { OcrError, OcrErrorCodes } from "./errors";
+import { OcrError, OcrErrorCodes } from "../errors";
 
 let s3Client: S3Client | null = null;
 

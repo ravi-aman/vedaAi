@@ -767,3 +767,6 @@ export function parseQuestionsFromTextract(
 
   return deduped;
 }
+
+// Alias for PaddleOCR — same generic parser, not Textract-specific
+export const parseQuestionsFromOcr = parseQuestionsFromTextract;

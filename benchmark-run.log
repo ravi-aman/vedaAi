@@ -1,0 +1,395 @@
+=== Physics Benchmark ===
+INFO: Could not find files for the given pattern(s).
+C:\Python311\Lib\site-packages\paddle\utils\cpp_extension\extension_utils.py:718: UserWarning: No ccache found. Please be aware that recompiling all source files may be required. You can download and install ccache from: https://github.com/ccache/ccache/blob/master/doc/INSTALL.md
+  warnings.warn(warning_message)
+C:\Python311\Lib\site-packages\requests\__init__.py:113: RequestsDependencyWarning: urllib3 (2.5.0) or chardet (7.6.0)/charset_normalizer (3.4.4) doesn't match a supported version!
+  warnings.warn(
+C:\Python311\Lib\site-packages\requests\__init__.py:113: RequestsDependencyWarning: urllib3 (2.5.0) or chardet (7.6.0)/charset_normalizer (3.4.4) doesn't match a supported version!
+  warnings.warn(
+{
+  "os": "win32 10.0.26200 x64",
+  "cpus": 16,
+  "totalMemMb": 16069,
+  "freeMemMb": 1573,
+  "nodeVersion": "v24.0.2",
+  "pythonVersion": "Python 3.11.7",
+  "paddleVersion": "3.2.0",
+  "paddleocrVersion": "3.7.0",
+  "paddlexVersion": "3.7.2",
+  "gpu": "NVIDIA GeForce RTX 3050 6GB Laptop GPU"
+}
+Models {
+  "en_PP-OCRv5_mobile_rec": "7.6MB",
+  "PP-DocBlockLayout": "123.9MB",
+  "PP-DocLayout_plus-L": "124.4MB",
+  "PP-OCRv5_mobile_det": "4.7MB",
+  "PP-OCRv5_server_det": "84.3MB",
+  "PP-OCRv5_server_rec": "81.3MB",
+  "PP-OCRv6_medium_det": "59.4MB",
+  "PP-OCRv6_medium_rec": "73.3MB"
+}
+QP E:\vedaAi\Quetion_paper_Physics_1.pdf 2170769 bytes
+AS E:\vedaAi\handwrittern_answer_sheet_physics_1.pdf 11011347 bytes
+QP pages 27, AS pages 31
+
+--- qp-subset kind=questionPaper total=27 testing 3 pages: 1,2,3 ---
+  render p1 893x1263 187142 bytes
+  render p2 893x1263 151510 bytes
+  render p3 893x1263 171105 bytes
+Rendered 3 pages in 182ms
+{"jobId":"benchmark-1787995680036","stage":"OCR","engine":"paddleocr","event":"worker_spawn_start","kind":"questionPaper","pages":3,"manifestPath":"C:\\Users\\Dell\\AppData\\Local\\Temp\\veda-ai\\benchmark-1787995680036\\paddle\\questionPaper-manifest.json","outputDir":"C:\\Users\\Dell\\AppData\\Local\\Temp\\veda-ai\\benchmark-1787995680036\\paddle\\questionPaper-output","pythonPath":"python"}
+[paddle_worker stderr] C:\Python311\Lib\site-packages\requests\__init__.py:113: RequestsDependencyWarning: urllib3 (2.5.0) or chardet (7.6.0)/charset_normalizer (3.4.4) doesn't match a supported version!
+[paddle_worker stderr]   warnings.warn(
+[paddle_worker stderr] [paddle_worker] imported paddleocr in 4038ms mem 559.4MB
+[paddle_worker stderr] E:\vedaAi\scripts\paddle_ocr_worker.py:55: UserWarning: `lang` and `ocr_version` will be ignored when model names or model directories are not `None`.
+[paddle_worker stderr]   ocr = PaddleOCR(**ocr_kwargs)
+[paddle_worker stderr] INFO: Could not find files for the given pattern(s).
+[paddle_worker stderr] C:\Python311\Lib\site-packages\paddle\utils\cpp_extension\extension_utils.py:718: UserWarning: No ccache found. Please be aware that recompiling all source files may be required. You can download and install ccache from: https://github.com/ccache/ccache/blob/master/doc/INSTALL.md
+[paddle_worker stderr]   warnings.warn(warning_message)
+[paddle_worker stderr] Creating model: ('PP-OCRv5_mobile_det', None, None)
+[paddle_worker stderr] Model files already exist. Using cached files. To redownload, please delete the directory manually: `C:\Users\Dell\.paddlex\official_models\PP-OCRv5_mobile_det`.
+[paddle_worker stderr] WARNING: Logging before InitGoogleLogging() is written to STDERR
+[paddle_worker stderr] I0829 14:58:05.095077 13300 onednn_context.cc:81] oneDNN v3.6.2
+[paddle_worker stderr] Creating model: ('en_PP-OCRv5_mobile_rec', None, None)
+[paddle_worker stderr] Model files already exist. Using cached files. To redownload, please delete the directory manually: `C:\Users\Dell\.paddlex\official_models\en_PP-OCRv5_mobile_rec`.
+[paddle_worker stderr] [paddle_worker] PaddleOCR initialized in 1314ms mem 740.9MB
+[paddle_worker stderr] [paddle_worker] processing 3 pages for benchmark-1787995680036 questionPaper
+[paddle_worker stderr] [paddle_worker] page 1 failed after 3187ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 2 failed after 2187ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 3 failed after 2681ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] completed 3 pages total 13413ms avg 2684ms peak 1150.9MB
+{"jobId":"benchmark-1787995680036","stage":"OCR","engine":"paddleocr","event":"worker_completed","kind":"questionPaper","durationMs":14288,"summary":{"jobId":"benchmark-1787995680036","kind":"questionPaper","engine":"paddleocr","ocrVersion":"PP-OCRv5","lang":"en","device":"cpu","pages":3,"totalMs":13413,"avgPageMs":2684,"minPageMs":2187,"maxPageMs":3187,"totalTexts":0,"totalPolys":0,"peakMemoryMb":1150.9,"completedAt":"2026-08-29T09:28:13Z"}}
+{"jobId":"benchmark-1787995680036","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":1,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995680036","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":2,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995680036","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":3,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995680036","stage":"OCR","engine":"paddleocr","event":"normalized","kind":"questionPaper","pages":3,"totalLines":0,"totalBlocks":0,"totalDuration":14354}
+Result qp-subset: pages 3 lines 0 blocks 0 words 0 textLen 0
+  conf avg 0.000 min 1.000 max 0.000
+  bboxCoverage 0.000 invalid 0
+  time total 14354ms avgPage 4785ms render 182ms mem 152.3->143.0MB
+  QP snippet:  |  | 
+  artifact artifacts/ocr-benchmark/qp-subset-questionPaper.json
+
+--- as-subset kind=answerSheet total=31 testing 3 pages: 1,5,10 ---
+  render p1 1263x893 18519 bytes
+  render p5 1263x894 803672 bytes
+  render p10 1263x894 952568 bytes
+Rendered 3 pages in 287ms
+{"jobId":"benchmark-1787995694690","stage":"OCR","engine":"paddleocr","event":"worker_spawn_start","kind":"answerSheet","pages":3,"manifestPath":"C:\\Users\\Dell\\AppData\\Local\\Temp\\veda-ai\\benchmark-1787995694690\\paddle\\answerSheet-manifest.json","outputDir":"C:\\Users\\Dell\\AppData\\Local\\Temp\\veda-ai\\benchmark-1787995694690\\paddle\\answerSheet-output","pythonPath":"python"}
+[paddle_worker stderr] C:\Python311\Lib\site-packages\requests\__init__.py:113: RequestsDependencyWarning: urllib3 (2.5.0) or chardet (7.6.0)/charset_normalizer (3.4.4) doesn't match a supported version!
+[paddle_worker stderr]   warnings.warn(
+[paddle_worker stderr] [paddle_worker] imported paddleocr in 4116ms mem 559.6MB
+[paddle_worker stderr] E:\vedaAi\scripts\paddle_ocr_worker.py:55: UserWarning: `lang` and `ocr_version` will be ignored when model names or model directories are not `None`.
+[paddle_worker stderr]   ocr = PaddleOCR(**ocr_kwargs)
+[paddle_worker stderr] INFO: Could not find files for the given pattern(s).
+[paddle_worker stderr] C:\Python311\Lib\site-packages\paddle\utils\cpp_extension\extension_utils.py:718: UserWarning: No ccache found. Please be aware that recompiling all source files may be required. You can download and install ccache from: https://github.com/ccache/ccache/blob/master/doc/INSTALL.md
+[paddle_worker stderr]   warnings.warn(warning_message)
+[paddle_worker stderr] Creating model: ('PP-OCRv5_mobile_det', None, None)
+[paddle_worker stderr] Model files already exist. Using cached files. To redownload, please delete the directory manually: `C:\Users\Dell\.paddlex\official_models\PP-OCRv5_mobile_det`.
+[paddle_worker stderr] WARNING: Logging before InitGoogleLogging() is written to STDERR
+[paddle_worker stderr] I0829 14:58:19.778846  7992 onednn_context.cc:81] oneDNN v3.6.2
+[paddle_worker stderr] Creating model: ('en_PP-OCRv5_mobile_rec', None, None)
+[paddle_worker stderr] Model files already exist. Using cached files. To redownload, please delete the directory manually: `C:\Users\Dell\.paddlex\official_models\en_PP-OCRv5_mobile_rec`.
+[paddle_worker stderr] [paddle_worker] PaddleOCR initialized in 1288ms mem 742.8MB
+[paddle_worker stderr] [paddle_worker] processing 3 pages for benchmark-1787995694690 answerSheet
+[paddle_worker stderr] [paddle_worker] page 1 failed after 708ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 5 failed after 1357ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 10 failed after 1571ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] completed 3 pages total 9049ms avg 1212ms peak 1008.2MB
+{"jobId":"benchmark-1787995694690","stage":"OCR","engine":"paddleocr","event":"worker_completed","kind":"answerSheet","durationMs":9838,"summary":{"jobId":"benchmark-1787995694690","kind":"answerSheet","engine":"paddleocr","ocrVersion":"PP-OCRv5","lang":"en","device":"cpu","pages":3,"totalMs":9049,"avgPageMs":1212,"minPageMs":708,"maxPageMs":1571,"totalTexts":0,"totalPolys":0,"peakMemoryMb":1008.2,"completedAt":"2026-08-29T09:28:23Z"}}
+{"jobId":"benchmark-1787995694690","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"answerSheet","pageNumber":1,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995694690","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"answerSheet","pageNumber":5,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995694690","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"answerSheet","pageNumber":10,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995694690","stage":"OCR","engine":"paddleocr","event":"normalized","kind":"answerSheet","pages":3,"totalLines":0,"totalBlocks":0,"totalDuration":9903}
+Result as-subset: pages 3 lines 0 blocks 0 words 0 textLen 0
+  conf avg 0.000 min 1.000 max 0.000
+  bboxCoverage 0.000 invalid 0
+  time total 9903ms avgPage 3301ms render 287ms mem 178.9->179.0MB
+  AS snippet:  |  | 
+  artifact artifacts/ocr-benchmark/as-subset-answerSheet.json
+
+--- qp-full kind=questionPaper total=27 testing 27 pages: 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27 ---
+  render p1 893x1263 187142 bytes
+  render p2 893x1263 151510 bytes
+  render p3 893x1263 171105 bytes
+  render p4 893x1263 127668 bytes
+  render p5 893x1263 128332 bytes
+  render p6 893x1263 129950 bytes
+  render p7 893x1263 132963 bytes
+  render p8 893x1263 143333 bytes
+  render p9 893x1263 150738 bytes
+  render p10 893x1263 163984 bytes
+  render p11 893x1263 172980 bytes
+  render p12 893x1263 153275 bytes
+  render p13 893x1263 162406 bytes
+  render p14 893x1263 122971 bytes
+  render p15 893x1263 122449 bytes
+  render p16 893x1263 141680 bytes
+  render p17 893x1263 143083 bytes
+  render p18 893x1263 152794 bytes
+  render p19 893x1263 150838 bytes
+  render p20 893x1263 151775 bytes
+  render p21 893x1263 157123 bytes
+  render p22 893x1263 124429 bytes
+  render p23 893x1263 127406 bytes
+  render p24 893x1263 161293 bytes
+  render p25 893x1263 164455 bytes
+  render p26 893x1263 92578 bytes
+  render p27 893x1263 99524 bytes
+Rendered 27 pages in 1079ms
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"worker_spawn_start","kind":"questionPaper","pages":27,"manifestPath":"C:\\Users\\Dell\\AppData\\Local\\Temp\\veda-ai\\benchmark-1787995705676\\paddle\\questionPaper-manifest.json","outputDir":"C:\\Users\\Dell\\AppData\\Local\\Temp\\veda-ai\\benchmark-1787995705676\\paddle\\questionPaper-output","pythonPath":"python"}
+[paddle_worker stderr] C:\Python311\Lib\site-packages\requests\__init__.py:113: RequestsDependencyWarning: urllib3 (2.5.0) or chardet (7.6.0)/charset_normalizer (3.4.4) doesn't match a supported version!
+[paddle_worker stderr]   warnings.warn(
+[paddle_worker stderr] [paddle_worker] imported paddleocr in 4069ms mem 558.9MB
+[paddle_worker stderr] E:\vedaAi\scripts\paddle_ocr_worker.py:55: UserWarning: `lang` and `ocr_version` will be ignored when model names or model directories are not `None`.
+[paddle_worker stderr]   ocr = PaddleOCR(**ocr_kwargs)
+[paddle_worker stderr] INFO: Could not find files for the given pattern(s).
+[paddle_worker stderr] C:\Python311\Lib\site-packages\paddle\utils\cpp_extension\extension_utils.py:718: UserWarning: No ccache found. Please be aware that recompiling all source files may be required. You can download and install ccache from: https://github.com/ccache/ccache/blob/master/doc/INSTALL.md
+[paddle_worker stderr]   warnings.warn(warning_message)
+[paddle_worker stderr] Creating model: ('PP-OCRv5_mobile_det', None, None)
+[paddle_worker stderr] Model files already exist. Using cached files. To redownload, please delete the directory manually: `C:\Users\Dell\.paddlex\official_models\PP-OCRv5_mobile_det`.
+[paddle_worker stderr] WARNING: Logging before InitGoogleLogging() is written to STDERR
+[paddle_worker stderr] I0829 14:58:30.710762 11112 onednn_context.cc:81] oneDNN v3.6.2
+[paddle_worker stderr] Creating model: ('en_PP-OCRv5_mobile_rec', None, None)
+[paddle_worker stderr] Model files already exist. Using cached files. To redownload, please delete the directory manually: `C:\Users\Dell\.paddlex\official_models\en_PP-OCRv5_mobile_rec`.
+[paddle_worker stderr] [paddle_worker] PaddleOCR initialized in 1271ms mem 741.3MB
+[paddle_worker stderr] [paddle_worker] processing 27 pages for benchmark-1787995705676 questionPaper
+[paddle_worker stderr] [paddle_worker] page 1 failed after 2934ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 2 failed after 2187ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 3 failed after 2959ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 4 failed after 2499ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 5 failed after 2694ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 6 failed after 2099ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 7 failed after 2607ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 8 failed after 2211ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 9 failed after 3078ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 10 failed after 2515ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 11 failed after 3236ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 12 failed after 2209ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 13 failed after 3226ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 14 failed after 1983ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 15 failed after 2209ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 16 failed after 2461ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 17 failed after 2684ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 18 failed after 2805ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 19 failed after 3466ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 20 failed after 2444ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 21 failed after 3119ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 22 failed after 2299ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 23 failed after 2512ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 24 failed after 2185ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 25 failed after 2835ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 26 failed after 1553ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] page 27 failed after 1950ms: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] Traceback (most recent call last):
+[paddle_worker stderr]   File "E:\vedaAi\scripts\paddle_ocr_worker.py", line 114, in main
+[paddle_worker stderr]     rec_boxes = raw.get("rec_boxes", []) or []
+[paddle_worker stderr]                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[paddle_worker stderr] ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+[paddle_worker stderr] [paddle_worker] completed 27 pages total 74408ms avg 2553ms peak 847.5MB
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"worker_completed","kind":"questionPaper","durationMs":78859,"summary":{"jobId":"benchmark-1787995705676","kind":"questionPaper","engine":"paddleocr","ocrVersion":"PP-OCRv5","lang":"en","device":"cpu","pages":27,"totalMs":74408,"avgPageMs":2553,"minPageMs":1552,"maxPageMs":3466,"totalTexts":0,"totalPolys":0,"peakMemoryMb":847.5,"completedAt":"2026-08-29T09:29:40Z"}}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":1,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":2,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":3,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":4,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":5,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":6,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":7,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":8,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":9,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":10,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":11,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":12,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":13,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":14,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":15,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":16,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":17,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":18,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":19,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":20,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":21,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":22,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":23,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":24,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":25,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":26,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"page_failed","kind":"questionPaper","pageNumber":27,"error":"The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()"}
+{"jobId":"benchmark-1787995705676","stage":"OCR","engine":"paddleocr","event":"normalized","kind":"questionPaper","pages":27,"totalLines":0,"totalBlocks":0,"totalDuration":79303}
+Result qp-full: pages 27 lines 0 blocks 0 words 0 textLen 0
+  conf avg 0.000 min 1.000 max 0.000
+  bboxCoverage 0.000 invalid 0
+  time total 79303ms avgPage 2937ms render 1079ms mem 188.9->176.5MB
+  QP snippet:  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | 
+  artifact artifacts/ocr-benchmark/qp-full-questionPaper.json
+
+--- as-full kind=answerSheet total=31 testing 31 pages: 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 ---
+  render p1 1263x893 18519 bytes
+  render p2 1263x894 972729 bytes
+  render p3 1263x894 838194 bytes
+  render p4 1263x894 943503 bytes
+  render p5 1263x894 803672 bytes
+  render p6 1263x894 971580 bytes
+  render p7 1263x894 882613 bytes
+  render p8 1263x894 1034379 bytes
+  render p9 1263x894 931110 bytes

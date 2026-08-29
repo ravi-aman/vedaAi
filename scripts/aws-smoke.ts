@@ -1,5 +1,7 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-nocheck
 /**
- * AWS Textract smoke test — verifies real S3 + Textract end-to-end.
+ * AWS Textract smoke test — verifies real S3 + Textract end-to-end. LEGACY — Textract removed from production.
  * Run: npm run test:aws
  * Requires: AWS_REGION, AWS_S3_BUCKET, AWS credentials (keys or IAM role).
  * Does NOT run in unit tests; only on demand.
