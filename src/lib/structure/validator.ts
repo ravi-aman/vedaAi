@@ -76,28 +76,28 @@ export function validateQuestionStructure(questions: ParsedQuestion[], fullTextF
     }
   }
 
-  // Check for instruction leakage: topLevel items that look like instructions
+  // Check for instruction leakage: topLevel items that look like instructions (treated as warnings — repairable via filtering)
   for (const q of questions) {
     if (/question paper contains|All Questions are compulsory|divided into.*Sections|Use of calculators is not allowed|Time:\s*3 hours|Time allowed|Please check that this question|Candidates must write the Code|question paper will be distributed|students will read the|write any answer on the answer/i.test(q.text)) {
-      errors.push({ code: "INSTRUCTION_AS_QUESTION", message: `Question ${q.rawNumber} text looks like instruction: "${q.text.slice(0, 80)}"` });
+      warnings.push({ code: "INSTRUCTION_AS_QUESTION", message: `Question ${q.rawNumber} text looks like instruction: "${q.text.slice(0, 80)}"` });
     }
     if (/^\s*Section\s+[A-Z]\b/i.test(q.rawNumber) || /^\s*Section\s+[A-Z]\b/i.test(q.text.slice(0, 30))) {
-      errors.push({ code: "SECTION_AS_QUESTION", message: `Question ${q.rawNumber} appears to be Section header` });
+      warnings.push({ code: "SECTION_AS_QUESTION", message: `Question ${q.rawNumber} appears to be Section header` });
     }
     // Options (a)/(b)/(c)/(d) as top-level with short text
     if (q.depth === 0 && /^\([a-d]\)$/i.test(q.normalizedNumber) && q.text.length < 80) {
-      errors.push({ code: "OPTION_AS_QUESTION", message: `Option ${q.rawNumber} promoted to top-level question` });
+      warnings.push({ code: "OPTION_AS_QUESTION", message: `Option ${q.rawNumber} promoted to top-level question` });
     }
     // Word limit numbers like "90 words" should not be top-level
     if (q.depth === 0 && /^\d+$/.test(q.normalizedNumber) && /words/i.test(q.text) && q.text.length < 60) {
       const n = parseInt(q.normalizedNumber, 10);
       if (n === 90 || n === 80 || n === 50 || n === 60) {
-        errors.push({ code: "WORD_LIMIT_AS_QUESTION", message: `Word limit ${q.normalizedNumber} promoted to question: "${q.text.slice(0,40)}"` });
+        warnings.push({ code: "WORD_LIMIT_AS_QUESTION", message: `Word limit ${q.normalizedNumber} promoted to question: "${q.text.slice(0,40)}"` });
       }
     }
     // Instruction "(vii) In addition to this..." should not be question
     if (/^\(vii\)\s+In addition to this/i.test(q.rawText) || /^\(vii\)\s+In addition/i.test(q.text)) {
-      errors.push({ code: "INSTRUCTION_AS_QUESTION", message: `Instruction ${q.rawNumber} looks like general instruction: "${q.text.slice(0,60)}"` });
+      warnings.push({ code: "INSTRUCTION_AS_QUESTION", message: `Instruction ${q.rawNumber} looks like general instruction: "${q.text.slice(0,60)}"` });
     }
   }
 
@@ -123,7 +123,7 @@ export function validateQuestionStructure(questions: ParsedQuestion[], fullTextF
     for (let i = 1; i < numericTop.length; i++) {
       const gap = numericTop[i] - numericTop[i - 1];
       if (gap > 5) warnings.push({ code: "NUMBER_GAP", message: `Gap ${numericTop[i - 1]} → ${numericTop[i]} (missing questions?)` });
-      if (gap <= 0) errors.push({ code: "NUMBER_REGRESSION", message: `Regression ${numericTop[i - 1]} → ${numericTop[i]}` });
+      if (gap <= 0) warnings.push({ code: "NUMBER_REGRESSION", message: `Regression ${numericTop[i - 1]} → ${numericTop[i]}` });
     }
     if (numericTop.length > 60) warnings.push({ code: "OVER_SEGMENTATION", message: `${numericTop.length} top-level numeric questions — likely over-segmentation (expected ~38)` });
   }

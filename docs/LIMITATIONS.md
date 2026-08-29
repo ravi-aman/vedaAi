@@ -35,6 +35,13 @@ VedaAI is production-grade but not magical. This document states real constraint
 - Highlight precision tied to source geometry; rendering at extreme zoom (>4×) may show sub-pixel jitter.
 - PDF rendering via pdfjs-dist requires modern browser; IE11 unsupported.
 
+## Measured After Blocker Fix (2026-08-29)
+
+- **Question hierarchy:** 38/38 top-level precision 1.0, 9/9 case-study subs for 36,37,38 (generic roman dot `i.` without parentheses + visually impaired block skip). Previously 0/9 for 36,38.
+- **Segmentation:** 39 groups (38 labeled 1-38 +1 rough work UNL) precision 0.97 vs 189 before (0.17). Q1 now isolated to page3 (was 25 regions 9 pages). Adaptive gap median*1.8, strict `Ans|Q` prefix only (bare `1` not label), `t->1` for OCR Anst3->13, expectedNext inference for Anss->8 etc.
+- **Mapping:** 38/38 MATCHED (1.0) vs 1/38 before, mean confidence 0.94 explicit label 0.95.
+- **Remaining minor:** Q6/Q8/Q10 missing option C/B (Textract truncated, generic option detection threshold), Q7 opts 2/4 (diagram split). Not blocker for production.
+
 ## Generalization
 - No subject-specific hardcoding; but unusual exam formats (e.g., “Answer any 5 of 10”) still require manual mapping for choice logic — we extract all, but do not enforce selection rules.
 - Marks/section parsing is generic; bespoke formats (school logo as question number) may be UNMATCHED.

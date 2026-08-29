@@ -803,21 +803,24 @@ async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocum
     throw new AppError(e.code || ErrorCodes.QUESTION_EXTRACTION_FAILED, `Question extraction failed: ${e.message}`);
   }
 
-  // Structure validator with bounded repair loop
+  // Structure validator with bounded repair loop (handles both errors and repairable warnings like duplicate regressions)
   let repairedQuestions = [...parsedQuestions];
   let validation = validateQuestionStructure(repairedQuestions);
   let repairIteration = 0;
-  const maxRepairIterations = 2;
-  while (!validation.valid && repairIteration < maxRepairIterations) {
+  const maxRepairIterations = 3;
+  const repairableWarningCodes = new Set(["INSTRUCTION_AS_QUESTION","SECTION_AS_QUESTION","OPTION_AS_QUESTION","WORD_LIMIT_AS_QUESTION","NUMBER_REGRESSION","DUPLICATE_NUMBER"]);
+  const hasRepairable = () => !validation.valid || validation.warnings.some(w=>repairableWarningCodes.has(w.code));
+  while (hasRepairable() && repairIteration < maxRepairIterations) {
     repairIteration++;
     const beforeCount = repairedQuestions.length;
-    // Repair: remove questions that are clearly instruction/section/option leakage
+    // Repair: remove questions that are clearly instruction/section/option leakage (matches validator's patterns)
     const toKeep: typeof repairedQuestions = [];
     for (const q of repairedQuestions) {
-      const isInstructionLeak = /question paper contains|All Questions are compulsory|divided into.*Sections|Use of calculators is not allowed|Time:\s*3 hours/i.test(q.text);
+      const isInstructionLeak = /question paper contains|All Questions are compulsory|divided into.*Sections|Use of calculators is not allowed|Time:\s*3 hours|Time allowed|Please check that this question|Candidates must write the Code|question paper will be distributed|students will read the|write any answer on the answer/i.test(q.text);
       const isSectionLeak = /^\s*Section\s+[A-Z]\b/i.test(q.rawNumber) || /^\s*Section\s+[A-Z]\b/i.test(q.text.slice(0, 30));
       const isOptionLeak = q.depth === 0 && /^\([a-d]\)$/i.test(q.normalizedNumber) && q.text.length < 80;
-      if (isInstructionLeak || isSectionLeak || isOptionLeak) {
+      const isWordLimitLeak = q.depth === 0 && /^\d+$/.test(q.normalizedNumber) && /words/i.test(q.text) && q.text.length < 60 && [50,60,80,90].includes(parseInt(q.normalizedNumber,10));
+      if (isInstructionLeak || isSectionLeak || isOptionLeak || isWordLimitLeak) {
         console.warn(JSON.stringify({ jobId, stage: "EXTRACTING", event: "repair_remove_leak", rawNumber: q.rawNumber, normalized: q.normalizedNumber, text: q.text.slice(0, 60) }));
         continue;
       }

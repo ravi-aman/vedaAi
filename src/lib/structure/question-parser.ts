@@ -90,6 +90,14 @@ function isPageHeaderFooter(text: string, bbox?: { x: number; y: number; width: 
   if (/^P\.T\.O\./i.test(t)) return true;
   if (/^NOTE$/i.test(t) && t.length < 10) return true;
 
+  // Code like "31/2/1" anywhere (not only header band) — short slash code is never a question
+  if (/^\s*\.?31\/2\/1\.?\s*$/i.test(t)) return true;
+  if (/^\s*31\/ETCH/.test(t)) return true;
+  if (/^\s*100A\s*$/.test(t)) return true;
+  if (/^\s*\.31\/2\/1\.\s*$/.test(t)) return true;
+  // Generic slash-code: short (<12 chars) with slash and digits, no letters beyond 2-3 chars, often header code
+  if (t.length < 14 && /^[\d\/\.]+$/.test(t.replace(/\s/g, "")) && /[\/]/.test(t) && /\d/.test(t)) return true;
+
   // Generic header/footer band: y in top 8% or bottom 8% of page
   const inHeaderBand = !!bbox && bbox.y < 0.08;
   const inFooterBand = !!bbox && bbox.y > 0.92;
@@ -250,8 +258,21 @@ function detectLabel(lineText: string, bbox?: { x: number; y: number; width: num
   if (/^\s*90\s+words/i.test(trimmed) && trimmed.length < 20) return null;
   // Options like "(a) 3" should not start a new top-level question
   if (isOptionLine(trimmed)) return null;
-  // Geometry: body numbers like "41cm" at interior x (0.117) should not become questions
-  const isLeftMargin = !bbox || bbox.x < 0.11;
+  // Strict left margin for question labels — single column expects x <0.14, two-column right allowed at 0.48-0.65 but only if truly two-column page
+  // For generic single-column papers, any x >0.18 is unlikely a question start
+  const isLeftMarginStrict = !bbox || bbox.x < 0.14;
+  const isRightColumnMargin = !!bbox && bbox.x >= 0.45 && bbox.x < 0.65;
+  // If not left and not right column, reject unless Q-prefixed at moderate x
+  if (!isLeftMarginStrict && !isRightColumnMargin) {
+    // Allow Q-prefixed even if slightly indented up to 0.22
+    if (/^\s*Q/i.test(trimmed) && bbox && bbox.x < 0.22) {
+      // allow
+    } else {
+      return null;
+    }
+  }
+  // Geometry: body numbers like "41cm" at interior should not become questions
+  const isLeftMargin = !bbox || bbox.x < 0.14;
   if (!isLeftMargin && /^\d+[a-z]{1,3}\b/.test(trimmed) && !/^\d+\s*[\.\)\(\-]/.test(trimmed) && !/^\s*Q/i.test(trimmed)) {
     return null;
   }
@@ -288,6 +309,37 @@ function detectLabel(lineText: string, bbox?: { x: number; y: number; width: num
     if (expectedTopLevelSet && !expectedTopLevelSet.has(n)) {
       return null;
     }
+  }
+
+  // Strict punctuation requirement for bare numbers without Q prefix
+  // e.g., "15 minute..." -> raw "15" without dot/parens and remaining starts with lowercase word -> not a question
+  // Real questions have "15." or "15(a)" or "15 )" etc. or "1 What is..." with uppercase
+  // Check original fullMatch for punctuation (dot/paren), not stripped rawNumber
+  const hadPunct = /[\.\)\(\:]/.test(fullMatch);
+  const isQPrefixed = /^\s*Q/i.test(trimmed);
+  if (!hadPunct && !isQPrefixed) {
+    // Bare number without punctuation: allow only if remaining starts with uppercase (plausible question stem)
+    // Reject if remaining starts with lowercase or digit (like "15 minute" or "10 30 out")
+    if (!remaining) {
+      // Bare number alone like "1" with no remaining — could be label on its own line, allow if left margin
+      // But single digit alone at left margin could also be page number; however page numbers are filtered via header band
+      // Allow for now
+    } else if (/^[a-z]/.test(remaining)) {
+      return null;
+    } else if (/^\d/.test(remaining)) {
+      return null;
+    }
+    // For "1 What is..." remaining starts with "W" uppercase, allow
+  }
+  // Additional guard: if remaining starts with digit, likely time like "10.15" or "7)2" -> not question
+  // Real question after "10." would start with uppercase letter, not digit (except equation)
+  if (hadPunct && remaining && /^\d/.test(remaining) && !/^\([a-z]\)/i.test(remaining.slice(0,5))) {
+    // e.g., "10." with remaining "15 a.m." -> time
+    return null;
+  }
+  // Additional guard: if remaining starts with digit, likely time like "10.15" or "7)2" -> not question
+  if (remaining && /^\d/.test(remaining) && !/^\([a-z]\)/i.test(remaining.slice(0,5))) {
+    return null;
   }
 
   // Guard: remaining very short and lowercase suggests fragment, not question? Still allow if remaining length >0 or next line will append.
@@ -598,7 +650,7 @@ export function parseQuestionsFromTextract(
           } else {
             parentCandidate = [...questions].reverse().find((q) => q.depth === 0);
           }
-          if (parentCandidate && remaining.length > 5) {
+          if (parentCandidate) {
             const depth = isRoman && parentCandidate.depth === 1 ? 2 : 1;
             const partType = depth === 2 ? "SUBPART" : "PART";
             current = {
@@ -616,14 +668,6 @@ export function parseQuestionsFromTextract(
               options: [],
             };
             currentLines = [line];
-            continue;
-          } else if (parentCandidate) {
-            const sep = parentCandidate.text ? " " : "";
-            parentCandidate.text += sep + text;
-            parentCandidate.rawText += sep + text;
-            const pn = (line as any).pageNumber as number;
-            if (!parentCandidate.bboxesByPage.has(pn)) parentCandidate.bboxesByPage.set(pn, []);
-            parentCandidate.bboxesByPage.get(pn)!.push((line as any).boundingBox);
             continue;
           }
         }

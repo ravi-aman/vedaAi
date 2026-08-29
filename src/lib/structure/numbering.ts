@@ -39,6 +39,11 @@ export function normalizeNumber(raw: string): ParsedNumber {
   const rawForEvidence = trimmed;
   let normalized = s;
 
+  // Strip leading zeros generically (07 -> 7, 007 -> 7, 08 -> 8) but keep "0" if alone
+  normalized = normalized.replace(/^0+(?=\d)/, "");
+  // For composite like 07(a) -> 7(a), 07(a)(i) -> 7(a)(i) — handle leading zeros before '(' or dot
+  normalized = normalized.replace(/^0+(\d)/, "$1");
+
   // Fix common OCR l -> 1 when pattern like "1l" or "l" alone before "("
   // Generic: if normalized matches ^1l(\(|$), replace 1l→11
   normalized = normalized.replace(/^1l(\b|\(|\.)/i, "11$1");
@@ -128,6 +133,9 @@ export function normalizeNumber(raw: string): ParsedNumber {
 
   // fallback: keep normalized as cleaned s
   if (!normalized) normalized = s;
+
+  // Final leading zero cleanup for any derived normalized (e.g., 07 -> 7)
+  normalized = normalized.replace(/^0+(?=\d)/, "");
 
   return {
     raw: rawForEvidence,

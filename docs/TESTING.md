@@ -138,12 +138,28 @@ Assertions: no infinite loop, correct errorCode, UI shows error.
 - Deterministic pipeline tests use `AI_PROVIDER=mock` with fixed fixture responses; no live model required.
 - Real AI evaluation runs separately (`AI_PROVIDER=openai`) on subset of fixtures, gated by env `RUN_REAL_AI=1`.
 
-## 9. Commands Summary
+## 9. Blocker Fix Tests (A-T) — 2026-08-29
+
+Added `tests/unit/blocker-fix.test.ts` 20 tests:
+
+- **A-D:** `Ans 1`, `Ans. 1`, `Q1` valid; standalone `1` inside handwriting NOT label; `101` inside answer NOT Q101.
+- **F-G:** page number/header NOT answer.
+- **H-J:** `Q36(i)/(ii)/(iii)` child of `Q36` via generic roman-dot `i.` without parentheses.
+- **K:** MCQ A/B/C/D as options, not questions.
+- **L:** `OR` internal choice same parent.
+- **M-N:** answer spanning pages same continuation, unrelated page N+1 NOT merged.
+- **O-T:** unanswered no fabricated answer, out-of-order correct, no-label REVIEW, rough work separate, crossed-out low confidence, diagram visual evidence.
+
+Plus `tests/e2e/verify-after-fix.spec.ts` for real job `39ac494f` (38 top, 41 cards, PDF canvas, highlight, zoom, resize).
+
+All 89 tests PASS.
+
+## 10. Commands Summary
 ```bash
 npm run typecheck
 npm run lint
-npm run test              # unit + integration
-npm run test:e2e          # playwright
+npm run test              # unit + integration (89 tests)
+npm run test:e2e          # playwright (verify-after-fix 1 passed 7s)
 npm run build && npm start
 npm run evaluate          # fixtures vs ground truth
 ```

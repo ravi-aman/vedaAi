@@ -44,8 +44,8 @@ function isHeaderOrPrinted(text: string, bbox?: { x: number; y: number; width: n
 }
 
 function mapOcrDigits(s: string): string {
-  // generic OCR confusion: l/I/| ->1, O/o ->0, keep others
-  return s.replace(/[lI|]/g, "1").replace(/[oO]/g, "0");
+  // generic OCR confusion: l/I/|/t ->1, O/o ->0
+  return s.replace(/[lI|tT]/g, "1").replace(/[oO]/g, "0");
 }
 
 function extractNumericLabel(text: string, hasPrefix: boolean, bbox?: { x: number; y: number; width: number; height: number }): { raw: string; normalized: string; remaining: string } | null {
@@ -60,8 +60,8 @@ function extractNumericLabel(text: string, hasPrefix: boolean, bbox?: { x: numbe
       // For Ans, take after first 3 chars, but handle fuzzy like Anss, Anst, Anslo
       const m = trimmed.match(/^\s*Ans[^\d]*([^\s]+)/i);
       after = m ? m[1] : "";
-      // remaining after number token
-      const fullMatch = trimmed.match(/^\s*Ans[^\d]*([0-9lIoO]+(?:\s*\([a-z]+\))?(?:\s*\([ivx]+\))?)[\s\.\)\-:]*/i);
+      // remaining after number token - allow t as 1 for OCR error Anst3 ->13
+      const fullMatch = trimmed.match(/^\s*Ans\s*\.?\s*([0-9lIoOtT]+(?:\s*\([a-z]+\))?(?:\s*\([ivx]+\))?)[\s\.\)\-:]*/i);
       if (fullMatch) {
         const numPart = mapOcrDigits(fullMatch[1].trim());
         if (!/\d/.test(numPart)) return null;
@@ -97,7 +97,7 @@ function extractNumericLabel(text: string, hasPrefix: boolean, bbox?: { x: numbe
       return null;
     }
     if (/^\s*Q/i.test(trimmed)) {
-      const m = trimmed.match(/^\s*Q(?:uestion)?\.?\s*([0-9lIoO]+(?:\s*\([a-z]+\))?(?:\s*\([ivx]+\))?)/i);
+      const m = trimmed.match(/^\s*Q(?:uestion)?\.?\s*([0-9lIoOtT]+(?:\s*\([a-z]+\))?(?:\s*\([ivx]+\))?)/i);
       if (!m) return null;
       const numPart = mapOcrDigits(m[1].trim());
       if (!/\d/.test(numPart)) return null;
@@ -167,7 +167,8 @@ function detectAnswerLabel(text: string, bbox?: { x: number; y: number; width: n
   // Confidence filter: very low confidence isolated token not label
   if (confidence !== undefined && confidence < 0.35 && /^\s*\d+\s*$/.test(trimmed)) return null;
 
-  const hasAnsPrefix = /^\s*Ans/i.test(trimmed) || /^\s*An[a-z]{1,2}\s*[0-9]/i.test(trimmed);
+  const lower = trimmed.toLowerCase();
+  const hasAnsPrefix = /^\s*an/i.test(trimmed) && trimmed.length < 12 && bbox !== undefined && bbox.x < 0.20 && /[0-9s]/i.test(trimmed.slice(2, 6));
   const hasQPrefix = /^\s*Q/i.test(trimmed);
 
   if (hasAnsPrefix) {
@@ -194,9 +195,22 @@ function detectAnswerLabel(text: string, bbox?: { x: number; y: number; width: n
     const r = extractNumericLabel(trimmed, true, bbox);
     return r;
   }
-  // Bare case
-  const bare = extractNumericLabel(trimmed, false, bbox);
-  return bare;
+  // For answer sheet, bare numbers without Ans/Q prefix are NOT labels, except those with parentheses (e.g., 11(a), 37(i))
+  // This prevents step numbers like "1.", "2." inside answer from splitting, but allows 11(a) as in test
+  const isLeft = !bbox || bbox.x < 0.15;
+  if (isLeft) {
+    const bareParen = trimmed.match(/^\s*(\d+\s*\([a-z]\)|\d+\s*\([ivx]+\))\s*[\s\.\)\-:]*/i);
+    if (bareParen) {
+      const numPart = bareParen[1].trim().replace(/\s+/g, "");
+      const parsed = normalizeNumber(numPart);
+      const n = parseInt(parsed.normalized.match(/^(\d+)/)?.[1] || "0", 10);
+      if (n >= 1 && n <= 100) {
+        const remaining = trimmed.slice(bareParen[0].length).trim();
+        return { raw: numPart, normalized: parsed.normalized, remaining };
+      }
+    }
+  }
+  return null;
 }
 
 function readingOrderSort(lines: OcrLine[]): OcrLine[] {
@@ -234,6 +248,7 @@ export function segmentAnswersFromTextract(
   const segments: SegmentedAnswer[] = [];
   let current: SegmentedAnswer | null = null;
   let currentLines: (OcrLine & { pageNumber: number })[] = [];
+  let expectedNext = 1;
 
   function finalize() {
     if (!current || currentLines.length === 0) return;
@@ -279,53 +294,68 @@ export function segmentAnswersFromTextract(
 
     const detected = detectAnswerLabel(text, bbox, conf);
     if (detected) {
-      // Validate normalized: if __unknown__, still split but mark
-      // If normalized is valid numeric >38, it's likely not answer label but math -> ignore
-      if (detected.normalized !== "__unknown__") {
-        const num = parseInt(detected.normalized.match(/^(\d+)/)?.[1] || "0", 10);
-        if (num > 50) {
-          // Likely math like 101, 102, etc -> not label, treat as continuation
-          // Fall through to continuation logic
+      let normalized = detected.normalized;
+      let raw = detected.raw;
+      let remaining = detected.remaining;
+      // Infer unknown Ans labels via expectedNext (handles OCR garble like Anss -> 8)
+      if (normalized === "__unknown__") {
+        normalized = String(expectedNext);
+        raw = `Ans ${normalized}`;
+      }
+      let num = parseInt(normalized.match(/^(\d+)/)?.[1] || "0", 10);
+      // Handle OCR extra digits for Ans-like (e.g., 817 for 17) - infer expectedNext if Ans-like at left margin
+      if (num > 50 && bbox && bbox.x < 0.20 && text.trim().length < 15 && /^\s*An/i.test(text)) {
+        normalized = String(expectedNext);
+        raw = `Ans ${normalized}`;
+        num = expectedNext;
+      }
+      if (num > 50) {
+        // Likely math like 101 -> not label
+      } else {
+        // Handle OCR dropped leading digit: e.g., 3 vs 13, 5 vs 15 (diff 10)
+        if (num < expectedNext && expectedNext - num === 10 && num < 10 && expectedNext >= 10) {
+          normalized = String(expectedNext);
+          raw = `Ans ${normalized}`;
+          num = expectedNext;
+        } else if (num < expectedNext && expectedNext - num > 5) {
+          // Far smaller than expected (likely step number inside answer like Q2 inside 28) -> not new answer
+          // Treat as continuation, not new label
+          // Fall through
         } else {
+          // Duplicate same label on same/sequential pages -> treat as continuation (single answer spanning pages or duplicate label lines)
+          if (current && current.normalizedLabel === normalized) {
+            const last = currentLines[currentLines.length - 1];
+            const sequential = Math.abs(line.pageNumber - last.pageNumber) === 1;
+            const samePage = line.pageNumber === last.pageNumber;
+            const nearBottomTop = last.boundingBox.y > 0.50 && line.boundingBox.y < 0.35;
+            if (sequential && nearBottomTop) {
+              current.text += remaining ? " " + remaining : "";
+              currentLines.push(line);
+              expectedNext = Math.max(expectedNext, num + 1);
+              continue;
+            }
+            if (samePage || sequential) {
+              if (remaining) current.text += " " + remaining;
+              currentLines.push(line);
+              continue;
+            }
+          }
           finalize();
           current = {
-            questionLabel: detected.raw,
-            normalizedLabel: detected.normalized,
-            text: detected.remaining,
+            questionLabel: raw,
+            normalizedLabel: normalized,
+            text: remaining,
             pageNumbers: [],
             bboxesByPage: new Map(),
             lines: [],
             confidence: 0.85,
             orderIndex: segments.length,
           };
-          // Add this line's bbox (the label line) to currentLines
-          // But we want to include label line's bbox as part of answer region? Spec says question number may be included incorrectly?
-          // For now, include label line but text is remaining only; bbox still belongs to region for highlight anchor
           currentLines = [line];
-          if (detected.remaining) {
-            current.text = detected.remaining;
-          } else {
-            current.text = "";
-          }
+          current.text = remaining || "";
+          expectedNext = Math.max(expectedNext, num + 1);
           continue;
         }
-      } else {
-        // Unknown label but still Ans-like at left margin -> split to prevent over-merge
-        finalize();
-        current = {
-          questionLabel: detected.raw,
-          normalizedLabel: undefined,
-          text: detected.remaining,
-          pageNumbers: [],
-          bboxesByPage: new Map(),
-          lines: [],
-          confidence: 0.6,
-          orderIndex: segments.length,
-        };
-        currentLines = [line];
-        if (detected.remaining) current.text = detected.remaining;
-        else current.text = "";
-        continue;
       }
     }
 
@@ -359,9 +389,24 @@ export function segmentAnswersFromTextract(
       // For continuity across pages without label, if previous segment ends near bottom (y>0.65) and new line starts near top (y<0.25) and pages sequential, it's continuation, not split
       const isPageContinuation = !samePage && Math.abs(line.pageNumber - last.pageNumber) === 1 && last.boundingBox.y > 0.55 && line.boundingBox.y < 0.35;
 
+      // Cross-page untagged that is not continuation should be separate (e.g., rough work on new page)
+      if (!samePage && !isPageContinuation && prevSubstantial && line.boundingBox.y < 0.25) {
+        finalize();
+        current = {
+          questionLabel: undefined,
+          normalizedLabel: undefined,
+          text: text,
+          pageNumbers: [],
+          bboxesByPage: new Map(),
+          lines: [],
+          confidence: 0.85,
+          orderIndex: segments.length,
+        };
+        currentLines = [line];
+        continue;
+      }
+
       if (isLargeGap && isLeftMargin && prevSubstantial && !isPageContinuation) {
-        // Large gap suggests new untagged answer without explicit label -> split
-        // But to avoid over-split of single answer with paragraph breaks, require gap > 0.06 and text starts with uppercase
         if (gap > 0.06 && /^[A-Z]/.test(text)) {
           finalize();
           current = {
