@@ -33,6 +33,7 @@ const QUESTION_LABEL_RE = /^\s*(?:Q(?:uestion)?\.?\s*)?(\d+[a-z]?\s*(?:\([a-z]\)
 
 // Subpart-only regex for standalone (a)/(i)/(ii) — used only to detect subparts via parent context, not as top-level
 const STANDALONE_SUBPART_RE = /^\s*\(([a-z]+|[ivx]+|[0-9]+)\)\s*[\.\)\-:\s]*\s*/i;
+const STANDALONE_ROMAN_DOT_RE = /^\s*(i{1,3}|iv|v|vi|vii|viii|ix|x)\s*[\.\)]\s*/i;
 
 const SECTION_RE = /^\s*(?:Section|Part)\s+[A-Z]\b/i;
 const INSTRUCTIONS_RE = /^\s*(?:Instructions|Note|General Instructions)\s*:?/i;
@@ -116,20 +117,26 @@ function isPageHeaderFooter(text: string, bbox?: { x: number; y: number; width: 
   if (/Candidates must write the Code/i.test(t)) return true;
   if (/Please check that this question/i.test(t)) return true;
 
-  // OCR garbage: generic generic detection — no paper-specific literals
-  // Pure symbols or very low alphanumeric content
-  if (/^[^\w]*$/.test(t) && t.length < 10) return true;
-  // Generic OCR garbage heuristic: short (<15 chars) with mixed symbols/digits and >40% non-alphanumeric, in any position, and confidence would be low (but we don't have it here)
-  if (t.length < 18 && t.length >= 4) {
-    const nonAlpha = (t.match(/[^a-zA-Z0-9\s]/g) || []).length;
-    const ratio = nonAlpha / t.length;
-    // e.g., "$21 onl", "4807, D_D", "3772 $41" — generic: many symbols + digits, few real words, short
-    if (ratio > 0.25 && /\d/.test(t) && !/[a-z]{3,}/i.test(t)) return true;
-    // Pure short code like "4807", "400 23" — short numeric + maybe short suffix, not a question (which needs accompanying text)
-    if (/^\d{3,5}(\s+[\w\/\-\.]{1,6})?$/.test(t) && t.length < 14 && !t.includes("marks")) {
-      // But avoid filtering legitimate question numbers like "1" or "22" alone at left margin — those are handled as labels elsewhere
-      // Only filter if in header/footer band or mid-page stray with no remaining text expectation
-      if ((bbox && (bbox.y < 0.10 || bbox.y > 0.88 || bbox.x > 0.7)) || ratio > 0.15) return true;
+  // Do not flag legitimate question labels as garbage
+  if (QUESTION_LABEL_RE.test(t) || STANDALONE_SUBPART_RE.test(t)) {
+    // e.g., "21.(A)", "(a)", "10" at left margin are valid labels, not garbage
+    // Do not treat as header/garbage
+  } else {
+    // OCR garbage: generic generic detection — no paper-specific literals
+    // Pure symbols or very low alphanumeric content
+    if (/^[^\w]*$/.test(t) && t.length < 10) return true;
+    // Generic OCR garbage heuristic: short (<15 chars) with mixed symbols/digits and >40% non-alphanumeric, in any position, and confidence would be low (but we don't have it here)
+    if (t.length < 18 && t.length >= 4) {
+      const nonAlpha = (t.match(/[^a-zA-Z0-9\s]/g) || []).length;
+      const ratio = nonAlpha / t.length;
+      // e.g., "$21 onl", "4807, D_D", "3772 $41" — generic: many symbols + digits, few real words, short
+      if (ratio > 0.25 && /\d/.test(t) && !/[a-z]{3,}/i.test(t)) return true;
+      // Pure short code like "4807", "400 23" — short numeric + maybe short suffix, not a question (which needs accompanying text)
+      if (/^\d{3,5}(\s+[\w\/\-\.]{1,6})?$/.test(t) && t.length < 14 && !t.includes("marks")) {
+        // But avoid filtering legitimate question numbers like "1" or "22" alone at left margin — those are handled as labels elsewhere
+        // Only filter if in header/footer band or mid-page stray with no remaining text expectation
+        if ((bbox && (bbox.y < 0.10 || bbox.y > 0.88 || bbox.x > 0.7)) || ratio > 0.15) return true;
+      }
     }
   }
   return false;
@@ -246,7 +253,6 @@ function detectLabel(lineText: string, bbox?: { x: number; y: number; width: num
   // Geometry: body numbers like "41cm" at interior x (0.117) should not become questions
   const isLeftMargin = !bbox || bbox.x < 0.11;
   if (!isLeftMargin && /^\d+[a-z]{1,3}\b/.test(trimmed) && !/^\d+\s*[\.\)\(\-]/.test(trimmed) && !/^\s*Q/i.test(trimmed)) {
-    // e.g., "41cm from the centre..." at x=0.117 — body text, not label
     return null;
   }
   // Skip fragmented short lowercase continuation that could be misread as "1" — but allow Q-prefixed labels
@@ -277,10 +283,9 @@ function detectLabel(lineText: string, bbox?: { x: number; y: number; width: num
   const numPart = rawNumber.match(/^(\d+)/);
   if (numPart) {
     const n = parseInt(numPart[1], 10);
-    if (n > 100) return null; // e.g., 400, 4807, 31924
+    if (n > 100) return null;
     if (n === 0) return null;
     if (expectedTopLevelSet && !expectedTopLevelSet.has(n)) {
-      // For this paper, only 1-30 are valid top-level
       return null;
     }
   }
@@ -414,10 +419,46 @@ export function parseQuestionsFromTextract(
     currentLines = [];
   }
 
+  let inVisuallyImpairedBlock = false;
+  let lastTopBeforeBlock = 0;
   for (const line of allLines) {
     const text = line.text.trim();
     if (!text) continue;
     const bbox = (line as any).boundingBox as { x: number; y: number; width: number; height: number } | undefined;
+
+    // Visually impaired alternative block: generic skip until next valid top-level question
+    if (/For Visually Impaired/i.test(text)) {
+      inVisuallyImpairedBlock = true;
+      // Remember last top-level number before block for exit condition
+      const tops = questions.filter((q) => q.depth === 0);
+      if (tops.length) {
+        const last = tops[tops.length - 1];
+        const m = last.normalizedNumber.match(/^(\d+)/);
+        if (m) lastTopBeforeBlock = parseInt(m[1], 10);
+      } else if (current) {
+        const m = current.normalizedNumber.match(/^(\d+)/);
+        if (m) lastTopBeforeBlock = parseInt(m[1], 10);
+      }
+      continue;
+    }
+    if (inVisuallyImpairedBlock) {
+      // Exit when we encounter next valid top-level question at left margin with number > lastTopBeforeBlock
+      const maybeLabel = detectLabel(text, bbox);
+      if (maybeLabel) {
+        const nm = maybeLabel.rawNumber.match(/^(\d+)/);
+        const n = nm ? parseInt(nm[1], 10) : 0;
+        if (n > lastTopBeforeBlock && n <= 50 && bbox && bbox.x < 0.12) {
+          inVisuallyImpairedBlock = false;
+          // fall through to normal processing for this line
+        } else {
+          continue;
+        }
+      } else {
+        // Also check if this line looks like next question without explicit detectLabel due to header filtering?
+        // If text at left margin looks like digit, keep skipping
+        continue;
+      }
+    }
 
     // Always skip headers/footers, marks, table cells — never become questions nor continuations
     if (isPageHeaderFooter(text, bbox)) continue;
@@ -440,10 +481,10 @@ export function parseQuestionsFromTextract(
       continue;
     }
 
-    const detected = detectLabel(text, (line as any).boundingBox);
-    if (detected) {
-      // Guard duplicated label: if detected number equals current's number and remaining is short continuation, merge instead of new
-      if (current && detected.rawNumber === current.rawNumber && detected.remaining.length < 30) {
+      const detected = detectLabel(text, (line as any).boundingBox);
+      if (detected) {
+        // Guard duplicated label: if detected number equals current's number and remaining is short continuation, merge instead of new
+        if (current && detected.rawNumber === current.rawNumber && detected.remaining.length < 30) {
         const sep = current.text ? " " : "";
         current.text += sep + detected.remaining;
         current.rawText += sep + detected.remaining;
@@ -479,6 +520,29 @@ export function parseQuestionsFromTextract(
       // New question starts
       finalizeCurrent();
       const { rawNumber, remaining } = detected;
+      // Synthesize missing top-level parent if label like "21.(A)" appears without prior "21"
+      const parsedForParent = normalizeNumber(rawNumber);
+      if (parsedForParent.parent && parsedForParent.depth > 0) {
+        const parentNorm = parsedForParent.parent;
+        const parentExists = questions.some((q) => q.normalizedNumber === parentNorm) || (current && current.normalizedNumber === parentNorm);
+        if (!parentExists) {
+          // Create synthetic parent placeholder for internal-choice questions like "21.(A)" without explicit "21"
+          const synthetic: ParsedQuestion = {
+            rawNumber: parentNorm,
+            normalizedNumber: parentNorm,
+            displayNumber: parentNorm,
+            text: `Question ${parentNorm}`,
+            rawText: `Question ${parentNorm}`,
+            pageNumbers: [(line as any).pageNumber as number],
+            bboxesByPage: new Map([[(line as any).pageNumber as number, [{ ...(line as any).boundingBox }]]]),
+            confidence: 0.6,
+            depth: 0,
+            partType: "QUESTION",
+            options: [],
+          };
+          questions.push(synthetic);
+        }
+      }
       current = {
         rawNumber,
         normalizedNumber: rawNumber, // will be normalized at finalize
@@ -494,16 +558,28 @@ export function parseQuestionsFromTextract(
       };
       currentLines = [line];
     } else {
-      // Standalone subpart like "(a)" or "(i)" — treat as child if current is numeric parent, else append
-      if (current && STANDALONE_SUBPART_RE.test(text)) {
-        const subM = text.match(STANDALONE_SUBPART_RE);
+      // Standalone subpart like "(a)" or "(i)" or "i." — treat as child if current is numeric parent, else append
+      const romanDotMatch = text.match(STANDALONE_ROMAN_DOT_RE);
+      const parenMatch = text.match(STANDALONE_SUBPART_RE);
+      const subM = parenMatch || romanDotMatch;
+      if (current && subM) {
+        const isParen = !!parenMatch;
         if (subM) {
           finalizeCurrent();
-          const rawInner = subM[1].toLowerCase();
-          const isRoman = /^[ivx]+$/i.test(rawInner) && rawInner.length <= 4;
-          const isLetter = /^[a-z]$/i.test(rawInner);
+          let rawInner: string;
+          let isRoman: boolean;
+          let isLetter: boolean;
+          if (isParen) {
+            rawInner = (subM as RegExpMatchArray)[1].toLowerCase();
+            isRoman = /^[ivx]+$/i.test(rawInner) && rawInner.length <= 4;
+            isLetter = /^[a-z]$/i.test(rawInner);
+          } else {
+            rawInner = (subM as RegExpMatchArray)[1].toLowerCase();
+            isRoman = true;
+            isLetter = false;
+          }
           const rawNumber = `(${rawInner})`;
-          const remaining = text.slice(subM[0].length).trim();
+          const remaining = text.slice((subM as RegExpMatchArray)[0].length).trim();
           // Hierarchical parent discovery
           let parentCandidate: ParsedQuestion | undefined;
           const last = questions[questions.length - 1];
@@ -578,21 +654,63 @@ export function parseQuestionsFromTextract(
     return q.text.trim().length > 0;
   });
 
-  // Deduplicate: if same normalizedNumber appears consecutively with overlapping small text, merge
+  // Deduplicate: same normalizedNumber must be single logical question (cross-page continuation)
+  // Previous 37(i) duplicate across OCR split caused 6 subs instead of 3
   const deduped: ParsedQuestion[] = [];
   for (const q of filtered) {
     const last = deduped[deduped.length - 1];
-    if (last && last.normalizedNumber === q.normalizedNumber && q.text.length < 40) {
-      last.text += " " + q.text;
-      last.rawText += " " + q.rawText;
+    // Consecutive exact duplicate (same parent same number) → merge always, keep longest text + union boxes
+    if (last && last.normalizedNumber === q.normalizedNumber) {
+      // Merge text if not already contained
+      if (!last.text.includes(q.text) && !q.text.includes(last.text)) {
+        last.text += " " + q.text;
+        last.rawText += " " + q.rawText;
+      } else if (q.text.length > last.text.length) {
+        last.text = q.text;
+        last.rawText = q.rawText;
+      }
       for (const [pn, boxes] of q.bboxesByPage) {
         if (!last.bboxesByPage.has(pn)) last.bboxesByPage.set(pn, []);
         last.bboxesByPage.get(pn)!.push(...boxes);
       }
-      if (!last.pageNumbers.includes(q.pageNumbers[0])) last.pageNumbers.push(q.pageNumbers[0]);
+      for (const pn of q.pageNumbers) if (!last.pageNumbers.includes(pn)) last.pageNumbers.push(pn);
+      // Merge options if any
+      if (q.options && q.options.length) {
+        if (!last.options) last.options = [];
+        for (const o of q.options) if (!last.options.some((x) => x.label === o.label)) last.options.push(o);
+      }
+      continue;
+    }
+    // Non-consecutive duplicate anywhere (e.g., later duplicate of 37(i) after 37(iii) block) → merge into first occurrence
+    const existing = deduped.find((x) => x.normalizedNumber === q.normalizedNumber);
+    if (existing) {
+      if (!existing.text.includes(q.text) && q.text.length > 10) {
+        if (!existing.text.includes(q.text)) existing.text += " " + q.text;
+      }
+      for (const [pn, boxes] of q.bboxesByPage) {
+        if (!existing.bboxesByPage.has(pn)) existing.bboxesByPage.set(pn, []);
+        existing.bboxesByPage.get(pn)!.push(...boxes);
+      }
+      for (const pn of q.pageNumbers) if (!existing.pageNumbers.includes(pn)) existing.pageNumbers.push(pn);
       continue;
     }
     deduped.push(q);
+  }
+
+  // MCQ false-positive guard: single "(A)" under a subpart is not an MCQ if no sibling (B) exists nearby
+  // Demote single-option questions back to text (preserves hierarchy, avoids 37(iii):1)
+  for (const q of deduped) {
+    if (q.options && q.options.length === 1) {
+      const opt = q.options[0];
+      // Check if sibling option (B) exists elsewhere as another question with same parent? If not, it's isolated (A) -> internal choice without B captured, treat as text
+      const siblingExists = deduped.some((x) => x !== q && x.parent === q.parent && x.normalizedNumber !== q.normalizedNumber) || q.text.length > 120;
+      if (!siblingExists) {
+        // Demote: append option back into text
+        q.text = (q.text ? q.text + " " : "") + `(${opt.label}) ${opt.text}`;
+        q.rawText = (q.rawText ? q.rawText + " " : "") + opt.rawText;
+        q.options = [];
+      }
+    }
   }
 
   // Structural validation: if we detect far more top-level than reported count, flag but don't hardcode

@@ -29,46 +29,66 @@ export const VisionPageStructureSchema = z.object({
   visualRegions: z.array(
     z.object({
       type: z.string().transform(normalizeRegionType),
-      description: z.string().max(500).default(""),
+      description: z.any().optional().transform((val: any) => {
+        if (Array.isArray(val)) return val.join("\n").slice(0, 1000);
+        if (typeof val === "string") return val.slice(0, 1000);
+        return "";
+      }).default(""),
+      content: z.any().optional().transform((val: any) => {
+        if (Array.isArray(val)) return val.join("\n").slice(0, 1000);
+        if (typeof val === "string") return val.slice(0, 1000);
+        return undefined;
+      }),
       confidence: z.number().min(0).max(1).default(0.7),
       coarseBox: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional(),
       relatedQuestionLabel: z.string().optional(),
-    })
+    }).passthrough().transform((v: any) => ({
+      type: v.type,
+      description: (v.description || v.content || "").slice(0, 1000),
+      confidence: v.confidence ?? 0.7,
+      coarseBox: v.coarseBox,
+      relatedQuestionLabel: v.relatedQuestionLabel,
+    }))
   ).default([]),
   questionCandidates: z.array(
-    z.object({
-      rawLabel: z.string(),
-      textHint: z.string().max(500).default(""),
-      confidence: z.number().min(0).max(1).default(0.7),
-      visualEvidence: z.string().max(500).default(""),
-    })
+    z.union([
+      z.string().transform((s) => ({ rawLabel: s, textHint: "", confidence: 0.7, visualEvidence: "" })),
+      z.object({
+        rawLabel: z.string(),
+        textHint: z.string().max(2000).default(""),
+        confidence: z.number().min(0).max(1).default(0.7),
+        visualEvidence: z.string().max(2000).default(""),
+      }),
+      z.object({
+        label: z.string(),
+        text: z.string().optional(),
+      }).passthrough().transform((v: any) => ({ rawLabel: v.label || v.rawLabel, textHint: v.text || "", confidence: 0.7, visualEvidence: "" })),
+    ])
   ).default([]),
   answerGroupHints: z.array(
-    z.object({
-      labelHint: z.string(),
-      description: z.string().max(500).default(""),
-      confidence: z.number().min(0).max(1).default(0.7),
-      isDiagram: z.boolean().optional(),
-      isCrossedOut: z.boolean().optional(),
-    })
+    z.union([
+      z.string().transform((s) => ({ labelHint: s, description: "", confidence: 0.7 })),
+      z.object({
+        labelHint: z.string(),
+        description: z.string().max(2000).default(""),
+        confidence: z.number().min(0).max(1).default(0.7),
+        isDiagram: z.boolean().optional(),
+        isCrossedOut: z.boolean().optional(),
+      }),
+      z.object({
+        label: z.string(),
+        text: z.string().optional(),
+      }).passthrough().transform((v: any) => ({ labelHint: v.label || v.labelHint || "", description: v.text || v.description || "", confidence: 0.7 })),
+    ])
   ).default([]),
-  documentStructureHints: z.object({
-    isMultiColumn: z.boolean().optional(),
-    hasSectionHeaders: z.boolean().optional(),
-    hasInstructions: z.boolean().optional(),
-    difficulty: z.enum(["easy", "moderate", "hard"]).optional(),
-  }).optional().default({}),
+  documentStructureHints: z.any().optional().default({}),
 });
 
 export type VisionPageStructure = z.infer<typeof VisionPageStructureSchema>;
 
 export const VisionDocumentAnalysisSchema = z.object({
   pages: z.array(VisionPageStructureSchema).default([]),
-  globalStructure: z.object({
-    estimatedQuestionCount: z.number().int().optional(),
-    sections: z.array(z.string()).optional(),
-    notes: z.string().max(1000).optional(),
-  }).optional().default({}),
+  globalStructure: z.any().optional().default({}),
 }).passthrough();
 
 export type VisionDocumentAnalysis = z.infer<typeof VisionDocumentAnalysisSchema>;

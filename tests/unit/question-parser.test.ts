@@ -59,15 +59,15 @@ describe("question-parser", () => {
   it("preserves 11(a) 11(b) distinct", () => {
     const ocr = makeDoc([makePage(1, [{ text: "11(a) Define Act" }, { text: "11(b) Explain" }, { text: "12 What is ..." }])]);
     const res = parseQuestionsFromTextract(ocr, pagesMeta(1));
-    expect(res.map((r) => r.normalizedNumber)).toEqual(["11(a)", "11(b)", "12"]);
-    expect(res[0].rawNumber).toBe("11(a)");
+    // Synthetic parent 11 created for 11(a)(b) internal choice
+    expect(res.map((r) => r.normalizedNumber)).toEqual(["11", "11(a)", "11(b)", "12"]);
+    expect(res[1].rawNumber).toBe("11(a)");
   });
 
   it("supports 11 (a) with space and 11(a)(i)", () => {
     const ocr = makeDoc([makePage(1, [{ text: "11 (a) Define" }, { text: "11(a)(i) Subpart" }])]);
     const res = parseQuestionsFromTextract(ocr, pagesMeta(1));
-    expect(res[0].normalizedNumber).toBe("11(a)");
-    expect(res[1].normalizedNumber).toBe("11(a)(i)");
+    expect(res.map((r) => r.normalizedNumber)).toEqual(["11", "11(a)", "11(a)(i)"]);
   });
 
   it("handles multi-line questions", () => {
@@ -92,8 +92,7 @@ describe("question-parser", () => {
   it("preserves original numbering (does not renumber 11(a) to 1)", () => {
     const ocr = makeDoc([makePage(1, [{ text: "11(a) First" }, { text: "11(b) Second" }])]);
     const res = parseQuestionsFromTextract(ocr, pagesMeta(1));
-    expect(res[0].normalizedNumber).toBe("11(a)");
-    expect(res[1].normalizedNumber).toBe("11(b)");
+    expect(res.map((r) => r.normalizedNumber)).toEqual(["11", "11(a)", "11(b)"]);
   });
 
   it("extracts marks", () => {

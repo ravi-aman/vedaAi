@@ -8,6 +8,7 @@
     }
   },
   "mcp": {},
+  "lsp": true,
   "permission": {
     "read": "allow",
     "write": "allow",

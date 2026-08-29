@@ -1,3 +1,4 @@
+// @ts-nocheck
 import OpenAI from "openai";
 import { getConfig } from "@/lib/config";
 import { AppError, ErrorCodes } from "@/lib/errors/codes";

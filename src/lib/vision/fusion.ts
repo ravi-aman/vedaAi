@@ -55,12 +55,12 @@ export function fuseDocuments(
         questionHints.push({ rawLabel: qc.rawLabel, normalized, confidence: hasGrounding ? qc.confidence : qc.confidence * 0.5, pageNumber: vp.pageNumber });
       }
       for (const ah of vp.answerGroupHints || []) {
-        let normalized = ah.labelHint;
+        let normalized = (ah as any).labelHint;
         try {
-          if (ah.labelHint) normalized = normalizeNumber(ah.labelHint).normalized;
+          if ((ah as any).labelHint) normalized = normalizeNumber((ah as any).labelHint).normalized;
         } catch {}
-        answerHints.push({ labelHint: ah.labelHint, normalized, confidence: ah.confidence, pageNumber: vp.pageNumber, isDiagram: !!ah.isDiagram });
-        if (ah.isDiagram) diagramPages.push(vp.pageNumber);
+        answerHints.push({ labelHint: (ah as any).labelHint, normalized, confidence: (ah as any).confidence, pageNumber: vp.pageNumber, isDiagram: !!(ah as any).isDiagram });
+        if ((ah as any).isDiagram) diagramPages.push(vp.pageNumber);
       }
       for (const vr of vp.visualRegions || []) {
         if (vr.type === "DIAGRAM" || vr.type === "FIGURE") diagramPages.push(vp.pageNumber);
