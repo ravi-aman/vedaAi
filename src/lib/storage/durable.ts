@@ -62,21 +62,32 @@ function pageStoragePath(jobId: string) { return `${PAGE_PREFIX}/job-${jobId.rep
 function pageDocPath(docId: string) { return `${PAGE_PREFIX}/doc-${docId.replace(/[^a-zA-Z0-9-]/g,"")}.json`; }
 function resultStoragePath(jobId: string) { return `${RESULT_PREFIX}/${jobId.replace(/[^a-zA-Z0-9-]/g,"")}.json`; }
 
-async function supabaseUploadJson(filePath: string, data: any): Promise<boolean> {
-  if (!isDurableConfigured()) return false;
+async function supabaseUploadJson(filePath: string, data: any): Promise<{ ok: boolean; error?: string }> {
+  if (!isDurableConfigured()) return { ok: false, error: "not configured" };
   try {
     const supabase = await getServiceClient();
     const blob = Buffer.from(JSON.stringify(data), "utf-8");
     const { error } = await (supabase as any).storage.from(BUCKET).upload(filePath, blob, { contentType: "application/json", upsert: true });
     if (error) {
-      // Bucket may not exist — try to fallback silently, but log
+      // Auto-create bucket if missing (first deploy)
+      if (error.message.toLowerCase().includes("bucket not found") || error.message.toLowerCase().includes("not found")) {
+        try {
+          const { error: createErr } = await (supabase as any).storage.createBucket(BUCKET, { public: false });
+          if (!createErr) {
+            const { error: retryErr } = await (supabase as any).storage.from(BUCKET).upload(filePath, blob, { contentType: "application/json", upsert: true });
+            if (!retryErr) return { ok: true };
+            console.warn(`[durable] upload retry failed ${filePath}: ${retryErr.message}`);
+            return { ok: false, error: retryErr.message };
+          }
+        } catch {}
+      }
       console.warn(`[durable] upload failed ${filePath}: ${error.message}`);
-      return false;
+      return { ok: false, error: error.message };
     }
-    return true;
+    return { ok: true };
   } catch (e: any) {
     console.warn(`[durable] upload exception ${filePath}: ${e?.message}`);
-    return false;
+    return { ok: false, error: e?.message };
   }
 }
 async function supabaseDownloadJson<T>(filePath: string): Promise<T | null> {
@@ -145,9 +156,9 @@ export class DurableJobStore implements JobStore {
     // DB first (if table exists), then storage
     const dbOk = await supabaseDbUpsert(job);
     if (!dbOk) {
-      const ok = await supabaseUploadJson(jobStoragePath(job.id), job);
+      const { ok, error } = await supabaseUploadJson(jobStoragePath(job.id), job);
       if (!ok && isVercelProduction()) {
-        throw new Error("CONFIGURATION_ERROR: Failed to persist job to durable Supabase Storage — bucket assessment-inputs missing or service key invalid. Check Supabase.");
+        throw new Error(`CONFIGURATION_ERROR: Failed to persist job to durable Supabase Storage — ${error || "bucket assessment-inputs missing or service key invalid"}. Check Supabase Dashboard > Storage > Create bucket 'assessment-inputs' (private) and verify SUPABASE_SERVICE_ROLE_KEY is service_role (eyJ...), not publishable.`);
       }
     }
   }
@@ -179,9 +190,9 @@ export class DurableJobStore implements JobStore {
     await persistWrite(jobFile(jobId), updated);
     const dbOk = await supabaseDbUpsert(updated);
     if (!dbOk) {
-      const ok = await supabaseUploadJson(jobStoragePath(jobId), updated);
+      const { ok, error } = await supabaseUploadJson(jobStoragePath(jobId), updated);
       if (!ok && isVercelProduction()) {
-        console.warn(`[durable] update persisted only to tmp, supabase failed for ${jobId} — will be non-durable on Vercel`);
+        console.warn(`[durable] update persisted only to tmp, supabase failed for ${jobId}: ${error} — will be non-durable on Vercel`);
       }
     }
     return updated;

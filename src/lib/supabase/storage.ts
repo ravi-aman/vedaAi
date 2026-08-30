@@ -31,7 +31,19 @@ export class SupabaseStorage implements FileStorage {
         contentType: "application/octet-stream",
         upsert: true,
       });
-      if (error) throw error;
+      if (error) {
+        if (String(error.message).toLowerCase().includes("bucket not found")) {
+          try {
+            await (supabase as any).storage.createBucket(this.bucket, { public: false });
+            const { error: retryErr } = await (supabase as any).storage.from(this.bucket).upload(path, buffer, { contentType: "application/octet-stream", upsert: true });
+            if (!retryErr) {
+              await this.localFallback.save(jobId, fileId, buffer, originalName).catch(() => {});
+              return path;
+            }
+          } catch {}
+        }
+        throw error;
+      }
       // also save locally for processing fallback
       await this.localFallback.save(jobId, fileId, buffer, originalName).catch(() => {});
       return path;
