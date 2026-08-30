@@ -33,6 +33,19 @@ function isDurableConfigured(): boolean {
     return Boolean(cfg.NEXT_PUBLIC_SUPABASE_URL && cfg.SUPABASE_SERVICE_ROLE_KEY);
   } catch { return false; }
 }
+function isVercelProduction(): boolean {
+  return Boolean(process.env.VERCEL);
+}
+function assertDurableInProduction(): void {
+  if (!isDurableConfigured()) {
+    const isRemote = (()=>{ try { const { isRemoteBackend } = require("@/lib/config"); return isRemoteBackend(); } catch { return false; }})();
+    if (isRemote || isVercelProduction()) {
+      // Strict: production with remote or Vercel must be durable, not silent fallback
+      // We throw only on write attempts, not on reads, to allow error to surface as 500 with clear code
+      throw new Error("CONFIGURATION_ERROR: Durable Supabase not configured — NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY required in production (PROCESSING_BACKEND=remote or VERCEL). Refusing silent fallback to InMemory/tmp.");
+    }
+  }
+}
 
 // Storage bucket + prefixes
 const BUCKET = "assessment-inputs";
@@ -124,11 +137,17 @@ export class DurableJobStore implements JobStore {
   private mem = new Map<string, ProcessingJob>();
 
   async create(job: ProcessingJob): Promise<void> {
+    assertDurableInProduction();
     this.mem.set(job.id, job);
     await persistWrite(jobFile(job.id), job);
     // DB first (if table exists), then storage
     const dbOk = await supabaseDbUpsert(job);
-    if (!dbOk) await supabaseUploadJson(jobStoragePath(job.id), job);
+    if (!dbOk) {
+      const ok = await supabaseUploadJson(jobStoragePath(job.id), job);
+      if (!ok && (isVercelProduction() || (()=>{ try { return require("@/lib/config").isRemoteBackend(); } catch { return false; }})())) {
+        throw new Error("CONFIGURATION_ERROR: Failed to persist job to durable Supabase Storage — bucket assessment-inputs missing or service key invalid. Check Supabase.");
+      }
+    }
   }
 
   async get(jobId: string): Promise<ProcessingJob | null> {
@@ -147,6 +166,7 @@ export class DurableJobStore implements JobStore {
   }
 
   async update(jobId: string, patch: Partial<ProcessingJob>): Promise<ProcessingJob> {
+    assertDurableInProduction();
     let existing: ProcessingJob | null | undefined = this.mem.get(jobId);
     if (!existing) {
       existing = await this.get(jobId);
@@ -156,7 +176,12 @@ export class DurableJobStore implements JobStore {
     this.mem.set(jobId, updated);
     await persistWrite(jobFile(jobId), updated);
     const dbOk = await supabaseDbUpsert(updated);
-    if (!dbOk) await supabaseUploadJson(jobStoragePath(jobId), updated);
+    if (!dbOk) {
+      const ok = await supabaseUploadJson(jobStoragePath(jobId), updated);
+      if (!ok && (isVercelProduction() || (()=>{ try { return require("@/lib/config").isRemoteBackend(); } catch { return false; }})())) {
+        console.warn(`[durable] update persisted only to tmp, supabase failed for ${jobId} — will be non-durable`);
+      }
+    }
     return updated;
   }
 
