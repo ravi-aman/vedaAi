@@ -79,32 +79,135 @@ async function updateDocStageGlobal(jobId: string, docKind: "questionPaper" | "a
   });
 }
 
-// ── Paddle model provisioning (one-time, file-locked) ───────────────────
+// ── Paddle model provisioning — atomic, file-locked, validated ─────────
 let paddleProvisioned = false;
 let paddleProvisionPromise: Promise<void> | null = null;
+
+async function isPaddleModelReady(modelName: string): Promise<boolean> {
+  const base = path.join(os.homedir(), ".paddlex", "official_models", modelName);
+  const required = ["inference.yml", "inference.json", "inference.pdiparams", "config.json"];
+  for (const fname of required) {
+    try {
+      const s = await fs.stat(path.join(base, fname));
+      if (s.size < 100) return false;
+    } catch { return false; }
+  }
+  return true;
+}
+async function isPaddleCacheReady(): Promise<boolean> {
+  const det = await isPaddleModelReady("PP-OCRv5_mobile_det");
+  const rec = await isPaddleModelReady("en_PP-OCRv5_mobile_rec");
+  return det && rec;
+}
+async function acquirePaddleLock(lockPath: string, timeoutMs: number = 90000): Promise<boolean> {
+  const start = Date.now();
+  let attempts = 0;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      await fs.mkdir(lockPath);
+      // Write PID for stale detection
+      try { await fs.writeFile(path.join(lockPath, "pid"), String(process.pid), "utf-8"); } catch {}
+      return true;
+    } catch (e: any) {
+      if (e.code !== "EEXIST") throw e;
+      // Check stale (older than 10 min)
+      try {
+        const st = await fs.stat(lockPath);
+        if (Date.now() - st.mtime.getTime() > 600000) {
+          console.warn(JSON.stringify({ stage: "OCR", event: "stale_lock_removed", lockPath }));
+          try { await fs.rm(lockPath, { recursive: true, force: true }); } catch {}
+          continue;
+        }
+      } catch {}
+      await new Promise(r => setTimeout(r, 500));
+      attempts++;
+      if (attempts % 10 === 0) console.log(JSON.stringify({ stage: "OCR", event: "provision_waiting_lock", waitSec: Math.round((Date.now()-start)/1000) }));
+    }
+  }
+  return false;
+}
+async function releasePaddleLock(lockPath: string): Promise<void> {
+  try { await fs.rm(lockPath, { recursive: true, force: true }); } catch {}
+}
+
 async function ensurePaddleModelsProvisioned(): Promise<void> {
-  if (paddleProvisioned) return;
+  if (paddleProvisioned) {
+    // Fast path: still validate cache is still ready (handles external deletion)
+    if (await isPaddleCacheReady()) return;
+    paddleProvisioned = false;
+  }
   if (paddleProvisionPromise) return paddleProvisionPromise;
   paddleProvisionPromise = (async () => {
+    const home = os.homedir();
+    const lockPath = path.join(home, ".paddlex", ".veda-provision.lock");
+    let lockAcquired = false;
     try {
-      const home = os.homedir();
-      const detYml = path.join(home, ".paddlex", "official_models", "PP-OCRv5_mobile_det", "inference.yml");
-      const recYml = path.join(home, ".paddlex", "official_models", "en_PP-OCRv5_mobile_rec", "inference.yml");
-      const exists = async (p: string) => { try { const s = await fs.stat(p); return s.size > 100; } catch { return false; } };
-      const detOk = await exists(detYml);
-      const recOk = await exists(recYml);
-      if (detOk && recOk) { paddleProvisioned = true; return; }
-      console.log(JSON.stringify({ stage: "OCR", event: "provision_start", detOk, recOk }));
+      if (await isPaddleCacheReady()) { paddleProvisioned = true; return; }
+      console.log(JSON.stringify({ stage: "OCR", event: "provision_start", reason: "cache not ready" }));
+      lockAcquired = await acquirePaddleLock(lockPath, 90000);
+      if (!lockAcquired) {
+        // Never proceed without lock — fail clearly
+        throw new Error(`INCOMPLETE_MODEL_CACHE: Could not acquire model provisioning lock after 90s; cache not ready and lock held. Failing safely without initializing incomplete cache.`);
+      }
+      // Re-check after acquiring lock — another provisioner may have just completed
+      if (await isPaddleCacheReady()) { paddleProvisioned = true; return; }
+      // Check for partial/corrupted cache: directory exists but not ready => delete incomplete
+      for (const model of ["PP-OCRv5_mobile_det", "en_PP-OCRv5_mobile_rec"]) {
+        const base = path.join(home, ".paddlex", "official_models", model);
+        const ready = await isPaddleModelReady(model);
+        if (!ready) {
+          try {
+            const stat = await fs.stat(base).catch(() => null);
+            if (stat) {
+              console.warn(JSON.stringify({ stage: "OCR", event: "incomplete_cache_detected", model, action: "removing incomplete dir" }));
+              await fs.rm(base, { recursive: true, force: true });
+            }
+          } catch {}
+        }
+      }
+      console.log(JSON.stringify({ stage: "OCR", event: "provision_downloading", models: ["PP-OCRv5_mobile_det", "en_PP-OCRv5_mobile_rec"] }));
       const { spawn } = await import("child_process");
       const cfg = getConfig() as any;
       const py = cfg.LOCAL_OCR_PYTHON || "python";
       const probe = spawn(py, ["-c", "from paddleocr import PaddleOCR; PaddleOCR(lang='en',ocr_version='PP-OCRv5',use_doc_orientation_classify=False,use_doc_unwarping=False,use_textline_orientation=False,text_detection_model_name='PP-OCRv5_mobile_det',text_recognition_model_name='en_PP-OCRv5_mobile_rec')"], { stdio: "ignore" });
-      await new Promise<void>((res, rej) => { const t = setTimeout(() => { probe.kill("SIGTERM"); rej(new Error("provision timeout")); }, 120000); probe.on("close", (code) => { clearTimeout(t); if (code === 0) res(); else rej(new Error(`provision exit ${code}`)); }); probe.on("error", rej); });
+      await new Promise<void>((res, rej) => {
+        const t = setTimeout(() => { probe.kill("SIGTERM"); rej(new Error("provision timeout after 120s")); }, 120000);
+        probe.on("close", (code) => { clearTimeout(t); if (code === 0) res(); else rej(new Error(`provision exit ${code}`)); });
+        probe.on("error", rej);
+      });
+      // Validate after download
+      const detOk = await isPaddleModelReady("PP-OCRv5_mobile_det");
+      const recOk = await isPaddleModelReady("en_PP-OCRv5_mobile_rec");
+      if (!detOk || !recOk) throw new Error(`INCOMPLETE_MODEL_CACHE: After provisioning, detReady=${detOk} recReady=${recOk}; expected all required files (inference.yml, inference.json, inference.pdiparams, config.json)`);
+      // Self-test: init PaddleOCR and process tiny image
+      try {
+        const { spawn: spawn2 } = await import("child_process");
+        const testPy = spawn2(py, ["-c", "from paddleocr import PaddleOCR; import numpy as np; from PIL import Image; import tempfile, os; img=np.ones((100,100,3),dtype=np.uint8)*255; p=tempfile.mktemp(suffix='.png'); Image.fromarray(img).save(p); ocr=PaddleOCR(lang='en',ocr_version='PP-OCRv5',use_doc_orientation_classify=False,use_doc_unwarping=False,use_textline_orientation=False,text_detection_model_name='PP-OCRv5_mobile_det',text_recognition_model_name='en_PP-OCRv5_mobile_rec'); res=ocr.predict(p); print('selftest ok', len(res)); os.unlink(p)"], { stdio: "pipe" });
+        let out=""; let err="";
+        testPy.stdout?.on("data", d=>out+=d.toString());
+        testPy.stderr?.on("data", d=>err+=d.toString());
+        await new Promise<void>((res, rej)=>{
+          const t=setTimeout(()=>{ testPy.kill("SIGTERM"); rej(new Error("selftest timeout")); }, 60000);
+          testPy.on("close", code=>{ clearTimeout(t); if(code===0 && out.includes("selftest ok")) res(); else rej(new Error(`selftest failed code ${code} out:${out.slice(0,500)} err:${err.slice(0,500)}`)); });
+          testPy.on("error", rej);
+        });
+        console.log(JSON.stringify({ stage: "OCR", event: "provision_selftest_ok" }));
+      } catch (e:any) {
+        console.warn(JSON.stringify({ stage: "OCR", event: "provision_selftest_failed", error: String(e.message).slice(0,500) }));
+        // Don't fail provisioning if self-test fails due to timeout, but log
+      }
       paddleProvisioned = true;
       console.log(JSON.stringify({ stage: "OCR", event: "provision_done" }));
     } catch (e: any) {
-      console.warn(JSON.stringify({ stage: "OCR", event: "provision_failed", error: e.message?.slice(0,300) }));
-    } finally { paddleProvisionPromise = null; }
+      console.error(JSON.stringify({ stage: "OCR", event: "provision_failed", error: e.message?.slice(0,500), code: e.code || "UNKNOWN" }));
+      // Clear stale lock if we hold it
+      if (lockAcquired) await releasePaddleLock(lockPath);
+      // Do not mark provisioned; throw so caller can handle as OCR_UNAVAILABLE
+      throw new OcrError(OcrErrorCodes.CONFIGURATION_ERROR, `Paddle model provisioning failed: ${e.message}`, e, false);
+    } finally {
+      if (lockAcquired) await releasePaddleLock(lockPath);
+      paddleProvisionPromise = null;
+    }
   })();
   return paddleProvisionPromise;
 }

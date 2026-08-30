@@ -13,6 +13,14 @@ import json
 import time
 import argparse
 import traceback
+import warnings
+# Suppress benign RequestsDependencyWarning before paddle imports (urllib3 2.5.0/chardet mismatch, not root cause)
+warnings.simplefilter("ignore")
+try:
+    import urllib3
+    warnings.filterwarnings("ignore", category=urllib3.exceptions.NotOpenSSLWarning)
+except Exception:
+    pass
 from pathlib import Path
 
 def log(msg):
@@ -37,52 +45,107 @@ def main():
     log(f"imported paddleocr in {(time.time()-t0)*1000:.0f}ms mem {mem_before:.1f}MB")
 
     t1 = time.time()
-    # ── File-locked model provisioning (Fixes QP OCR || AS OCR race) ──
-    # PaddleX model resolver is not atomic: concurrent workers race on .paddlex/official_models extraction.
-    # Use directory-based lock (atomic mkdir) to serialize PaddleOCR initialization only; inference remains parallel.
-    lock_dir = Path.home() / ".paddlex" / ".veda-init.lock"
-    lock_acquired = False
-    lock_attempts = 0
-    while not lock_acquired and lock_attempts < 120:
-        try:
-            lock_dir.mkdir(parents=False, exist_ok=False)
-            lock_acquired = True
-        except FileExistsError:
-            time.sleep(0.5)
-            lock_attempts += 1
-            if lock_attempts % 10 == 0:
-                log(f"waiting for paddle init lock held by other worker... {lock_attempts*0.5:.0f}s")
-    if not lock_acquired:
-        log(f"WARNING: could not acquire paddle init lock after 60s, proceeding without lock (may race)")
+    # ── File-locked model provisioning — NEVER proceed without lock ──
+    # PaddleX model resolver is not atomic: concurrent workers race on .paddlex/official_models.
+    # Use directory-based lock (atomic mkdir) + cache validation. If lock cannot be acquired, FAIL, don't race.
+    def is_model_ready(model_name: str) -> bool:
+        base = Path.home() / ".paddlex" / "official_models" / model_name
+        required = ["inference.yml", "inference.json", "inference.pdiparams", "config.json"]
+        for fname in required:
+            p = base / fname
+            try:
+                if not p.exists() or p.stat().st_size < 100:
+                    return False
+            except Exception:
+                return False
+        return True
+
+    def is_cache_ready() -> bool:
+        return is_model_ready("PP-OCRv5_mobile_det") and is_model_ready("en_PP-OCRv5_mobile_rec")
+
+    # If cache already ready, no lock needed — fast path for warm runs
+    if not is_cache_ready():
+        lock_dir = Path.home() / ".paddlex" / ".veda-provision.lock"
+        lock_acquired = False
+        lock_attempts = 0
+        # Stale lock detection: if lock dir older than 10 min, consider stale (previous crash)
+        def is_lock_stale(p: Path) -> bool:
+            try:
+                mtime = p.stat().st_mtime
+                return (time.time() - mtime) > 600
+            except Exception:
+                return False
+        while not lock_acquired and lock_attempts < 180:  # 90s total, bounded
+            try:
+                lock_dir.mkdir(parents=False, exist_ok=False)
+                lock_acquired = True
+            except FileExistsError:
+                if is_lock_stale(lock_dir):
+                    try:
+                        # Try to remove stale lock
+                        lock_dir.rmdir()
+                        log(f"removed stale lock after 600s, retrying")
+                        continue
+                    except Exception:
+                        pass
+                time.sleep(0.5)
+                lock_attempts += 1
+                if lock_attempts % 10 == 0:
+                    log(f"waiting for paddle init lock held by other worker... {lock_attempts*0.5:.0f}s")
+        if not lock_acquired:
+            log(f"ERROR: could not acquire paddle init lock after 90s, failing rather than racing")
+            print(json.dumps({"error": "INCOMPLETE_MODEL_CACHE", "message": f"Could not acquire model provisioning lock after 90s after {lock_attempts} attempts; cache not ready={not is_cache_ready()}; failing safely without initializing incomplete cache"}), file=sys.stderr)
+            sys.exit(2)
+        # Re-check after acquiring lock — another worker may have just provisioned
+        if not is_cache_ready():
+            log(f"cache not ready after acquiring lock, provisioning required (det={is_model_ready('PP-OCRv5_mobile_det')} rec={is_model_ready('en_PP-OCRv5_mobile_rec')})")
+            # Delete incomplete model directories so PaddleX will re-download (it skips download if dir exists even when incomplete)
+            for m in ["PP-OCRv5_mobile_det", "en_PP-OCRv5_mobile_rec"]:
+                if not is_model_ready(m):
+                    base = Path.home() / ".paddlex" / "official_models" / m
+                    if base.exists():
+                        try:
+                            import shutil
+                            shutil.rmtree(base)
+                            log(f"removed incomplete {m} for re-download")
+                        except Exception as e:
+                            log(f"failed to remove incomplete {m}: {e}")
+            # Now PaddleOCR will download fresh while holding lock (single writer, safe)
+        else:
+            log(f"cache already ready after acquiring lock, no provisioning needed")
+    else:
+        lock_acquired = False
+        lock_attempts = 0
+        lock_dir = Path.home() / ".paddlex" / ".veda-provision.lock"
     try:
-        # Speed-first: use mobile detection where available, English rec
+        # Configured models: PP-OCRv5_mobile_det + en_PP-OCRv5_mobile_rec (no silent fallback)
         ocr_kwargs = dict(
             lang=args.lang,
             ocr_version=args.ocr_version,
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=False,
+            text_detection_model_name="PP-OCRv5_mobile_det",
+            text_recognition_model_name="en_PP-OCRv5_mobile_rec",
         )
-        # Use mobile models for speed if available, else fallback to server — verified existence
-        if args.ocr_version == "PP-OCRv5":
-            try:
-                import pathlib
-                det_path = pathlib.Path.home() / ".paddlex" / "official_models" / "PP-OCRv5_mobile_det" / "inference.yml"
-                rec_path = pathlib.Path.home() / ".paddlex" / "official_models" / "en_PP-OCRv5_mobile_rec" / "inference.yml"
-                det_ok = det_path.exists() and det_path.stat().st_size > 100
-                rec_ok = rec_path.exists() and rec_path.stat().st_size > 100
-                if det_ok and rec_ok:
-                    ocr_kwargs["text_detection_model_name"] = "PP-OCRv5_mobile_det"
-                    ocr_kwargs["text_recognition_model_name"] = "en_PP-OCRv5_mobile_rec"
-                    log(f"using mobile models: det={det_ok} rec={rec_ok}")
-                elif rec_ok:
-                    ocr_kwargs["text_recognition_model_name"] = "en_PP-OCRv5_mobile_rec"
-                    log(f"using mobile rec only: det={det_ok} rec={rec_ok}")
-                else:
-                    log(f"mobile models not ready (det={det_ok} rec={rec_ok}), using PaddleOCR defaults (will auto-download)")
-                    # Do not force server — let PaddleOCR choose correct default and download
-            except Exception as e:
-                log(f"mobile model check failed: {e}, using PaddleOCR defaults")
+        # Validate that configured mobile models are actually ready; if not, fail clearly rather than silently switching to server
+        if not is_model_ready("PP-OCRv5_mobile_det") or not is_model_ready("en_PP-OCRv5_mobile_rec"):
+            det_ready = is_model_ready("PP-OCRv5_mobile_det")
+            rec_ready = is_model_ready("en_PP-OCRv5_mobile_rec")
+            log(f"ERROR: configured mobile models not ready (det={det_ready} rec={rec_ready}) — expected PP-OCRv5_mobile_det and en_PP-OCRv5_mobile_rec")
+            # If we hold the lock, try one-time provisioning via PaddleOCR download while holding lock (single writer, safe)
+            if lock_acquired:
+                log(f"attempting one-time provisioning while holding lock...")
+                # PaddleOCR will download missing model to official_models; since we hold lock, no race
+                # We already set ocr_kwargs to mobile, so it will download the missing one
+            else:
+                # We didn't hold lock but cache not ready — this should not happen if runner provisioned before workers
+                log(f"ERROR: cache not ready but lock not held — runner should have provisioned before workers. Failing.")
+                print(json.dumps({"error": "INCOMPLETE_MODEL_CACHE", "message": f"Mobile models not ready det={det_ready} rec={rec_ready} and lock not held"}), file=sys.stderr)
+                sys.exit(3)
+        else:
+            log(f"using configured mobile models: PP-OCRv5_mobile_det + en_PP-OCRv5_mobile_rec (validated)")
+
         ocr = PaddleOCR(**ocr_kwargs)
         t2 = time.time()
         log(f"PaddleOCR initialized in {(t2-t1)*1000:.0f}ms mem {proc.memory_info().rss/1024/1024:.1f}MB lock_wait={lock_attempts*0.5:.1f}s")
