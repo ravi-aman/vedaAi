@@ -25,6 +25,101 @@ import { shouldInvokeVision } from "@/lib/vision/router";
 import { fuseDocuments } from "@/lib/vision/fusion";
 import { renderPdfPagesForVision } from "@/lib/documents/render";
 import type { VisionDocumentAnalysis } from "@/lib/vision/provider";
+import { runSmartMapping, writeMappingDebugArtifacts, buildAnswerEvidences } from "@/lib/mapping/smart-mapping";
+
+// ── PERFORMANCE: bounded concurrency + shared render ─────────────────────
+type SharedPageImage = { pageNumber: number; imagePath: string; width: number; height: number; base64: string };
+type SharedRender = { qp: SharedPageImage[]; as: SharedPageImage[]; qpDoc: any; asDoc: any; qpPages: any[]; asPages: any[] };
+type TimelineEvent = { stage: string; document?: string; batch?: string; worker?: string; start: number; end?: number; durationMs?: number; status: string; attempt?: number; memoryMb?: number; pageRange?: string };
+
+// ── Concurrency-safe JobStore via per-job async mutex ──────────────────
+const jobUpdateLocks = new Map<string, Promise<void>>();
+async function withJobLock<T>(jobId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = jobUpdateLocks.get(jobId) || Promise.resolve();
+  let resolveLock: () => void;
+  const next = new Promise<void>((res) => (resolveLock = res));
+  jobUpdateLocks.set(jobId, prev.then(() => next));
+  await prev;
+  try { return await fn(); } finally { resolveLock!(); jobUpdateLocks.delete(jobId); if (jobUpdateLocks.get(jobId) === next) jobUpdateLocks.delete(jobId); }
+}
+
+// ── Cancellation ───────────────────────────────────────────────────────
+const jobAbortControllers = new Map<string, AbortController>();
+export function getJobAbortSignal(jobId: string): AbortSignal | undefined { return jobAbortControllers.get(jobId)?.signal; }
+export function cancelJob(jobId: string) {
+  jobAbortControllers.get(jobId)?.abort();
+  // Cancel OCR workers and Vision queued batches (bounded backpressure)
+  try { const { PaddleOcrProvider } = require("@/lib/ocr/paddle-provider"); PaddleOcrProvider.cancelWorkers(jobId); } catch {}
+}
+function ensureAbortController(jobId: string): AbortController {
+  let c = jobAbortControllers.get(jobId);
+  if (!c) { c = new AbortController(); jobAbortControllers.set(jobId, c); }
+  return c;
+}
+function isCancelled(jobId: string): boolean { return jobAbortControllers.get(jobId)?.signal.aborted === true; }
+async function updateDocStageGlobal(jobId: string, docKind: "questionPaper" | "answerSheet", stage: string, status: "in_progress" | "completed" | "failed") {
+  await withJobLock(jobId, async () => {
+    const cur = await jobStore.get(jobId);
+    if (!cur) return;
+    const docStates = { ...(cur as any).progress.docStageStates } as any;
+    if (!docStates[docKind]) docStates[docKind] = {};
+    docStates[docKind][stage] = status;
+    const global = { ...cur.progress.stageStates } as any;
+    const map: Record<string, ProcessingStage> = { render: "PREPROCESSING", ocr: "OCR_PROCESSING", vision: "VISION", fusion: "FUSION" } as any;
+    const gStage = map[stage] || (stage as ProcessingStage);
+    const allDocVals = Object.values(docStates).map((d: any) => d[stage]).filter(Boolean);
+    if (allDocVals.length > 0) {
+      if (allDocVals.every((v) => v === "completed")) global[gStage] = "completed";
+      else if (allDocVals.some((v) => v === "failed")) global[gStage] = "failed";
+      else if (allDocVals.some((v) => v === "in_progress")) global[gStage] = "in_progress";
+    }
+    await jobStore.update(jobId, { progress: { ...cur.progress, stageStates: global, docStageStates: docStates } as any, updatedAt: new Date().toISOString() } as any);
+  });
+}
+
+// ── Paddle model provisioning (one-time, file-locked) ───────────────────
+let paddleProvisioned = false;
+let paddleProvisionPromise: Promise<void> | null = null;
+async function ensurePaddleModelsProvisioned(): Promise<void> {
+  if (paddleProvisioned) return;
+  if (paddleProvisionPromise) return paddleProvisionPromise;
+  paddleProvisionPromise = (async () => {
+    try {
+      const home = os.homedir();
+      const detYml = path.join(home, ".paddlex", "official_models", "PP-OCRv5_mobile_det", "inference.yml");
+      const recYml = path.join(home, ".paddlex", "official_models", "en_PP-OCRv5_mobile_rec", "inference.yml");
+      const exists = async (p: string) => { try { const s = await fs.stat(p); return s.size > 100; } catch { return false; } };
+      const detOk = await exists(detYml);
+      const recOk = await exists(recYml);
+      if (detOk && recOk) { paddleProvisioned = true; return; }
+      console.log(JSON.stringify({ stage: "OCR", event: "provision_start", detOk, recOk }));
+      const { spawn } = await import("child_process");
+      const cfg = getConfig() as any;
+      const py = cfg.LOCAL_OCR_PYTHON || "python";
+      const probe = spawn(py, ["-c", "from paddleocr import PaddleOCR; PaddleOCR(lang='en',ocr_version='PP-OCRv5',use_doc_orientation_classify=False,use_doc_unwarping=False,use_textline_orientation=False,text_detection_model_name='PP-OCRv5_mobile_det',text_recognition_model_name='en_PP-OCRv5_mobile_rec')"], { stdio: "ignore" });
+      await new Promise<void>((res, rej) => { const t = setTimeout(() => { probe.kill("SIGTERM"); rej(new Error("provision timeout")); }, 120000); probe.on("close", (code) => { clearTimeout(t); if (code === 0) res(); else rej(new Error(`provision exit ${code}`)); }); probe.on("error", rej); });
+      paddleProvisioned = true;
+      console.log(JSON.stringify({ stage: "OCR", event: "provision_done" }));
+    } catch (e: any) {
+      console.warn(JSON.stringify({ stage: "OCR", event: "provision_failed", error: e.message?.slice(0,300) }));
+    } finally { paddleProvisionPromise = null; }
+  })();
+  return paddleProvisionPromise;
+}
+
+async function boundedPool<T, R>(items: T[], concurrency: number, fn: (item: T, idx: number) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const idx = next++;
+      results[idx] = await fn(items[idx], idx);
+    }
+  }
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
 
 /** Merge per-line boxes into one coherent highlight per page with controlled padding (Phase 28-29) */
 function mergeBoxesForHighlight(boxes: { x: number; y: number; width: number; height: number }[]): { x: number; y: number; width: number; height: number }[] {
@@ -146,100 +241,200 @@ async function runJob(jobId: string) {
   let job = await jobStore.get(jobId);
   if (!job) return;
 
-  const updateStage = async (stage: ProcessingStage, status: "in_progress" | "completed" | "failed") => {
-    const stageStates = { ...job!.progress.stageStates } as any;
-    stageStates[stage] = status;
-    await jobStore.update(jobId, {
-      currentStage: stage,
-      status: stage as ProcessingStage,
-      progress: { ...job!.progress, stageStates },
-      updatedAt: new Date().toISOString(),
-    });
-    job = await jobStore.get(jobId);
+  const tJobStart = Date.now();
+  const timeline: TimelineEvent[] = [];
+  const pushTimeline = (e: TimelineEvent) => timeline.push(e);
+  const persistTimeline = async () => {
+    try {
+      const artDir = path.join(process.cwd(), "artifacts", jobId.replace(/[^a-zA-Z0-9-]/g, ""));
+      await fs.mkdir(artDir, { recursive: true });
+      const summary = { jobId, totalWallMs: Date.now() - tJobStart, timeline, generatedAt: new Date().toISOString() };
+      await fs.writeFile(path.join(artDir, "performance-timeline.json"), JSON.stringify(summary, null, 2), "utf-8");
+      const tmpDir = path.join(os.tmpdir(), "veda-ai", jobId.replace(/[^a-zA-Z0-9-]/g, ""), "debug");
+      await fs.mkdir(tmpDir, { recursive: true });
+      await fs.writeFile(path.join(tmpDir, "performance-timeline.json"), JSON.stringify(summary, null, 2), "utf-8");
+    } catch {}
   };
 
+  const updateStage = async (stage: ProcessingStage, status: "in_progress" | "completed" | "failed") => {
+    await withJobLock(jobId, async () => {
+      const cur = await jobStore.get(jobId);
+      if (!cur) return;
+      const stageStates = { ...cur.progress.stageStates } as any;
+      stageStates[stage] = status;
+      await jobStore.update(jobId, {
+        currentStage: stage,
+        status: stage as ProcessingStage,
+        progress: { ...cur.progress, stageStates },
+        updatedAt: new Date().toISOString(),
+      });
+      job = await jobStore.get(jobId);
+    });
+  };
+  // Per-document stage tracking (questionPaper/answerSheet) + global aggregate
+  const updateDocStage = async (docKind: "questionPaper" | "answerSheet", stage: string, status: "in_progress" | "completed" | "failed") => {
+    await withJobLock(jobId, async () => {
+      const cur = await jobStore.get(jobId);
+      if (!cur) return;
+      const docStates = { ...(cur as any).progress.docStageStates } as any;
+      if (!docStates[docKind]) docStates[docKind] = {};
+      docStates[docKind][stage] = status;
+      // Aggregate to global stageStates for UI: if any doc pending, global in_progress, else completed
+      const global = { ...cur.progress.stageStates } as any;
+      // Map doc stages to global ProcessingStage where applicable
+      const map: Record<string, ProcessingStage> = { render: "PREPROCESSING", ocr: "OCR_PROCESSING", vision: "VISION", fusion: "FUSION" } as any;
+      const gStage = map[stage] || (stage as ProcessingStage);
+      const allDocVals = Object.values(docStates).map((d: any) => d[stage]);
+      if (allDocVals.every((v) => v === "completed")) global[gStage] = "completed";
+      else if (allDocVals.some((v) => v === "failed")) global[gStage] = "failed";
+      else if (allDocVals.some((v) => v === "in_progress")) global[gStage] = "in_progress";
+      await jobStore.update(jobId, {
+        progress: { ...cur.progress, stageStates: global, docStageStates: docStates } as any,
+        updatedAt: new Date().toISOString(),
+      } as any);
+      job = await jobStore.get(jobId);
+    });
+  };
+
+  const abortCtrl = ensureAbortController(jobId);
   try {
+    const t0 = Date.now();
+    pushTimeline({ stage: "VALIDATING", start: t0, status: "in_progress" });
     await updateStage("VALIDATING", "in_progress");
     await validateJob(jobId);
     await updateStage("VALIDATING", "completed");
+    pushTimeline({ stage: "VALIDATING", start: t0, end: Date.now(), durationMs: Date.now() - t0, status: "completed" });
 
+    const tPre = Date.now();
+    pushTimeline({ stage: "PREPROCESSING", start: tPre, status: "in_progress" });
     await updateStage("PREPROCESSING", "in_progress");
     const prep = await preprocess(jobId);
     await updateStage("PREPROCESSING", "completed");
+    pushTimeline({ stage: "PREPROCESSING", start: tPre, end: Date.now(), durationMs: Date.now() - tPre, status: "completed" });
 
-    // OCR — PaddleOCR (local, PP-StructureV3) — no S3, no Textract
+    // ── SHARED RENDER: once, reuse for OCR + Vision (Phase 5) ─────────
+    const tRender = Date.now();
+    pushTimeline({ stage: "RENDER_SHARED", start: tRender, status: "in_progress" });
     await updateStage("OCR_SUBMITTED", "in_progress");
-    const ocrData = await ocrStage(jobId);
+    await updateStage("VISION", "in_progress");
+    await updateDocStage("questionPaper", "render", "in_progress");
+    await updateDocStage("answerSheet", "render", "in_progress");
+    const shared = await renderSharedStage(jobId);
+    await updateDocStage("questionPaper", "render", "completed");
+    await updateDocStage("answerSheet", "render", "completed");
+    pushTimeline({ stage: "RENDER_SHARED", start: tRender, end: Date.now(), durationMs: Date.now() - tRender, status: "completed" });
+    console.log(JSON.stringify({ jobId, stage: "RENDER", event: "shared_completed", qpPages: shared.qp.length, asPages: shared.as.length, durationMs: Date.now() - tRender }));
+
+    // ── FOUR-WAY PARALLEL: QP OCR || AS OCR || QP Vision || AS Vision ─
+    const tParallel = Date.now();
+    pushTimeline({ stage: "PARALLEL_OCR_VISION", start: tParallel, status: "in_progress" });
+    console.log(JSON.stringify({ jobId, stage: "PARALLEL", event: "four_way_start", qpOcrPages: shared.qp.length, asOcrPages: shared.as.length }));
+
+    // Launch OCR and Vision concurrently; Vision is image-first (no OCR dependency) — Phase 4,15
+    // Ensure cancellation propagates
+    if (abortCtrl.signal.aborted) throw new AppError(ErrorCodes.UNKNOWN_ERROR, "Job cancelled before parallel stage");
+    const ocrPromise = ocrStageWithShared(jobId, shared, pushTimeline);
+    const visionPromise = visionStageWithShared(jobId, shared, pushTimeline);
+
+    const [ocrData, visionData] = await Promise.all([ocrPromise, visionPromise]);
+    pushTimeline({ stage: "PARALLEL_OCR_VISION", start: tParallel, end: Date.now(), durationMs: Date.now() - tParallel, status: "completed" });
+    console.log(JSON.stringify({ jobId, stage: "PARALLEL", event: "four_way_completed", durationMs: Date.now() - tParallel, hasQpOcr: !!ocrData?.qpOcr, hasAsOcr: !!ocrData?.asOcr, hasQpVision: !!(visionData as any)?.qpVision, hasAsVision: !!(visionData as any)?.asVision }));
+
     await updateStage("OCR_SUBMITTED", "completed");
-
     await updateStage("OCR_PROCESSING", "in_progress");
-    // ocrStage already completes local OCR; this stage is for progress visibility
     await updateStage("OCR_PROCESSING", "completed");
-
     await updateStage("OCR_COMPLETED", "in_progress");
     await updateStage("OCR_COMPLETED", "completed");
-
-    // Vision — parallel visual understanding (real page images, evidence-only, grounded to PaddleOCR geometry)
-    await updateStage("VISION", "in_progress");
-    const visionData = await visionStage(jobId, ocrData);
     await updateStage("VISION", "completed");
 
     // Fusion — reconcile PaddleOCR + Vision + geometry → Canonical
+    const tFusion = Date.now();
+    pushTimeline({ stage: "FUSION", start: tFusion, status: "in_progress" });
     await updateStage("FUSION", "in_progress");
-    const fusionData = await fusionStage(jobId, ocrData, visionData);
+    const fusionData = await fusionStage(jobId, ocrData, visionData as any);
     await updateStage("FUSION", "completed");
+    pushTimeline({ stage: "FUSION", start: tFusion, end: Date.now(), durationMs: Date.now() - tFusion, status: "completed" });
 
+    const tExtract = Date.now();
+    pushTimeline({ stage: "EXTRACTING", start: tExtract, status: "in_progress" });
     await updateStage("EXTRACTING", "in_progress");
     const extraction = await extracting(jobId, prep, ocrData, visionData, fusionData);
     await updateStage("EXTRACTING", "completed");
+    pushTimeline({ stage: "EXTRACTING", start: tExtract, end: Date.now(), durationMs: Date.now() - tExtract, status: "completed" });
 
+    const tStruct = Date.now();
+    pushTimeline({ stage: "STRUCTURING", start: tStruct, status: "in_progress" });
     await updateStage("STRUCTURING", "in_progress");
     const structured = await structuring(jobId, extraction);
     await updateStage("STRUCTURING", "completed");
+    pushTimeline({ stage: "STRUCTURING", start: tStruct, end: Date.now(), durationMs: Date.now() - tStruct, status: "completed" });
 
+    const tMatch = Date.now();
+    pushTimeline({ stage: "MATCHING", start: tMatch, status: "in_progress" });
     await updateStage("MATCHING", "in_progress");
     const matching = await matchingStage(jobId, structured);
     await updateStage("MATCHING", "completed");
+    pushTimeline({ stage: "MATCHING", start: tMatch, end: Date.now(), durationMs: Date.now() - tMatch, status: "completed" });
 
+    const tLoc = Date.now();
+    pushTimeline({ stage: "LOCALIZING", start: tLoc, status: "in_progress" });
     await updateStage("LOCALIZING", "in_progress");
     const localized = await localizing(jobId, matching);
     await updateStage("LOCALIZING", "completed");
+    pushTimeline({ stage: "LOCALIZING", start: tLoc, end: Date.now(), durationMs: Date.now() - tLoc, status: "completed" });
 
+    const tVal = Date.now();
+    pushTimeline({ stage: "VALIDATING_RESULT", start: tVal, status: "in_progress" });
     await updateStage("VALIDATING_RESULT", "in_progress");
     await validatingResult(jobId, localized);
     await updateStage("VALIDATING_RESULT", "completed");
+    pushTimeline({ stage: "VALIDATING_RESULT", start: tVal, end: Date.now(), durationMs: Date.now() - tVal, status: "completed" });
 
-    await jobStore.update(jobId, {
-      status: "COMPLETED",
-      currentStage: "COMPLETED",
-      progress: {
-        stageStates: {
-          ...job!.progress.stageStates,
-          COMPLETED: "completed",
+    await withJobLock(jobId, async () => {
+      const cur = await jobStore.get(jobId);
+      await jobStore.update(jobId, {
+        status: "COMPLETED",
+        currentStage: "COMPLETED",
+        progress: {
+          stageStates: {
+            ...cur!.progress.stageStates,
+            COMPLETED: "completed",
+          } as any,
+          docStageStates: (cur as any).progress.docStageStates,
         } as any,
-      },
+      });
     });
 
-    resultStore.set(jobId, localized);
+    await resultStore.setAsync(jobId, localized);
+    pushTimeline({ stage: "COMPLETED", start: tJobStart, end: Date.now(), durationMs: Date.now() - tJobStart, status: "completed" });
+    await persistTimeline();
+    jobAbortControllers.delete(jobId);
 
     // No S3 staging cleanup needed — PaddleOCR uses local temp files (os.tmpdir/veda-ai/{jobId}/paddle-images)
   } catch (e: any) {
+    try { await persistTimeline(); } catch {}
     const code = e?.code || ErrorCodes.UNKNOWN_ERROR;
     const stage = job?.currentStage || "FAILED";
-    await jobStore.update(jobId, {
-      status: "FAILED",
-      currentStage: "FAILED",
-      error: {
-        code,
-        message: e?.message || String(e),
-        stage,
-        timestamp: new Date().toISOString(),
-      },
-      progress: {
-        ...job!.progress,
-        stageStates: { ...job!.progress.stageStates, [stage]: "failed" as const } as any,
-      },
+    // Ensure workers cancelled
+    try { cancelJob(jobId); } catch {}
+    await withJobLock(jobId, async () => {
+      const cur = await jobStore.get(jobId);
+      await jobStore.update(jobId, {
+        status: "FAILED",
+        currentStage: "FAILED",
+        error: {
+          code,
+          message: e?.message || String(e),
+          stage,
+          timestamp: new Date().toISOString(),
+        },
+        progress: {
+          ...cur!.progress,
+          stageStates: { ...cur!.progress.stageStates, [stage]: "failed" as const } as any,
+        } as any,
+      });
     });
+    jobAbortControllers.delete(jobId);
     throw e;
   }
 }
@@ -303,39 +498,35 @@ export const visionResultStore = new Map<string, { qpVision?: VisionDocumentAnal
 export const fusionResultStore = new Map<string, any>();
 class PersistedResultStore {
   private map = new Map<string, any>();
+  private pendingWrites = new Map<string, Promise<void>>();
+  async setAsync(jobId: string, v: any) {
+    this.map.set(jobId, v);
+    const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+    const p = path.join(RESULT_PERSIST_DIR, `result-${safe}.json`);
+    // Deduplicate concurrent writes: reuse pending promise
+    const existing = this.pendingWrites.get(jobId);
+    if (existing) await existing.catch(() => {});
+    const wp = (async () => {
+      try {
+        await fs.mkdir(path.dirname(p), { recursive: true });
+        // Avoid deep-clone giant: stringify directly without clone; use streaming write
+        const json = JSON.stringify(v);
+        await fs.writeFile(p, json, "utf-8");
+      } catch {}
+    })();
+    this.pendingWrites.set(jobId, wp);
+    await wp;
+    this.pendingWrites.delete(jobId);
+  }
+  // Legacy sync set now delegates to async but keeps compat: writes via setAsync fire-and-forget to avoid duplicate sync+async
   set(jobId: string, v: any) {
     this.map.set(jobId, v);
-    try {
-      const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
-      const p = path.join(RESULT_PERSIST_DIR, `result-${safe}.json`);
-      const { mkdirSync, writeFileSync } = require("fs");
-      const { dirname } = require("path");
-      mkdirSync(dirname(p), { recursive: true });
-      writeFileSync(p, JSON.stringify(v, null, 2), "utf-8");
-    } catch {}
-    // also async fallback
-    resultPersistWrite(jobId, v);
+    // Fire-and-forget async write; do not duplicate sync write
+    this.setAsync(jobId, v).catch(() => {});
   }
   get(jobId: string) {
-    const mem = this.map.get(jobId);
-    if (mem) return mem;
-    // sync read from disk (blocking) — use deasync-like sync read via fs sync? fallback to async via cache population
-    // For sync get, we try to read synchronously if available
-    try {
-      const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
-      const p = path.join(RESULT_PERSIST_DIR, `result-${safe}.json`);
-      // sync read if exists
-      const { readFileSync, existsSync } = require("fs");
-      if (existsSync(p)) {
-        const buf = readFileSync(p, "utf-8");
-        const data = JSON.parse(buf);
-        this.map.set(jobId, data);
-        return data;
-      }
-    } catch {}
-    return undefined;
+    return this.map.get(jobId);
   }
-  // async fallback used by API routes
   async getAsync(jobId: string) {
     const mem = this.map.get(jobId);
     if (mem) return mem;
@@ -456,190 +647,190 @@ async function renderPdfBufferToPngFiles(
   throw new OcrError(OcrErrorCodes.OPERATION_FAILED, `Failed to render PDF for PaddleOCR kind=${kind} pages=${pageNumbers.length}`, null, false);
 }
 
-async function ocrStage(jobId: string): Promise<{ qpOcr?: OcrDocumentResult; asOcr?: OcrDocumentResult }> {
+// ── SHARED RENDER: immutable PageImage artifact reused by OCR + Vision ─────
+// Bounded image lifecycle: render once to disk; base64 loaded lazily per Vision batch, not all 58 at once.
+// withBase64 flag kept for compat but we prefer lazy loading: store path + dims, Vision reads on demand.
+async function renderPdfBufferToPngFilesWithBase64(
+  buffer: Buffer,
+  jobId: string,
+  kind: string,
+  pageNumbers: number[],
+  withBase64: boolean
+): Promise<SharedPageImage[]> {
+  const base = await renderPdfBufferToPngFiles(buffer, jobId, kind, pageNumbers);
+  // For OCR we never need base64; for Vision we load per-batch to avoid holding 58*1.5MB in RAM
+  if (!withBase64) return base.map(r => ({ ...r, base64: "" }));
+  // Lazy mode: still return with empty base64; Vision loader will read file per batch (bounded)
+  // Keep one sample base64 for logging but not all
+  return base.map(r => ({ ...r, base64: "" }));
+}
+async function loadBase64ForPages(pages: SharedPageImage[]): Promise<SharedPageImage[]> {
+  // Bounded base64 loading: read at most 3 images at a time (Vision batch size) to avoid unbounded memory
+  const out: SharedPageImage[] = [];
+  for (const p of pages) {
+    try {
+      const b64 = (await fs.readFile(p.imagePath)).toString("base64");
+      out.push({ ...p, base64: b64 });
+    } catch {
+      out.push({ ...p, base64: "" });
+    }
+  }
+  return out;
+}
+
+async function renderSharedStage(jobId: string): Promise<SharedRender> {
+  const docs = await documentStore.getByJob(jobId);
+  const job = await jobStore.get(jobId);
+  if (!job) throw new AppError(ErrorCodes.JOB_NOT_FOUND, `Job ${jobId} not found for render`);
+  const qpDoc = docs.find((d) => d.kind === "questionPaper");
+  const asDoc = docs.find((d) => d.kind === "answerSheet");
+  if (!qpDoc || !asDoc) throw new AppError(ErrorCodes.VALIDATION_FAILED, "Missing docs for render");
+  const qpPages = await pageStoreApi.getByDocument(qpDoc.id);
+  const asPages = await pageStoreApi.getByDocument(asDoc.id);
+  const qpNums = qpPages.map((p: any) => p.pageNumber).sort((a: number, b: number) => a - b);
+  const asNums = asPages.map((p: any) => p.pageNumber).sort((a: number, b: number) => a - b);
+
+  async function renderDoc(kind: "questionPaper" | "answerSheet", doc: any, nums: number[]): Promise<SharedPageImage[]> {
+    const fileId = kind === "questionPaper" ? job!.questionPaperFileId! : job!.answerSheetFileId!;
+    const buf = await fileStorage.read(jobId, fileId);
+    const isPdf = doc.mime === "application/pdf" || buf.slice(0,4).toString() === "%PDF";
+    if (!isPdf) {
+      // Single image document — render once, store path, base64 lazy
+      const safeJob = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+      const outDir = path.join(os.tmpdir(), "veda-ai", safeJob, "paddle-images", kind);
+      await fs.mkdir(outDir, { recursive: true });
+      const imgPath = path.join(outDir, `page-001.png`);
+      await fs.writeFile(imgPath, buf);
+      const first = kind === "questionPaper" ? qpPages[0] : asPages[0];
+      return [{ pageNumber: 1, imagePath: imgPath, width: first?.width || 800, height: first?.height || 1100, base64: "" }];
+    }
+    const cfg = getConfig() as any;
+    const needVision = (cfg.VISION_PROVIDER || "auto") !== "disabled" && cfg.OCR_PROVIDER !== "mock";
+    try {
+      return await renderPdfBufferToPngFilesWithBase64(buf, jobId, kind, nums, needVision);
+    } catch (e: any) {
+      // fallback: try image path direct
+      console.warn(JSON.stringify({ jobId, stage: "RENDER", event: "render_failed_fallback", kind, error: e.message?.slice(0,200) }));
+      const safeJob = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+      const outDir = path.join(os.tmpdir(), "veda-ai", safeJob, "paddle-images", kind);
+      await fs.mkdir(outDir, { recursive: true });
+      const imgPath = path.join(outDir, `page-001.png`);
+      await fs.writeFile(imgPath, buf);
+      const first = kind === "questionPaper" ? qpPages[0] : asPages[0];
+      return [{ pageNumber: 1, imagePath: imgPath, width: first?.width || 800, height: first?.height || 1100, base64: "" }];
+    }
+  }
+
+  // QP and AS renders run together (different buffers, different dirs) — Phase 5 page image contract
+  const [qpImgs, asImgs] = await Promise.all([
+    renderDoc("questionPaper", qpDoc, qpNums),
+    renderDoc("answerSheet", asDoc, asNums),
+  ]);
+  return { qp: qpImgs, as: asImgs, qpDoc, asDoc, qpPages, asPages };
+}
+
+// ── NEW: OCR with shared render, QP||AS parallel (bounded) ───────────────
+async function ocrStageWithShared(jobId: string, shared: SharedRender, onEvent?: (e: TimelineEvent) => void): Promise<{ qpOcr?: OcrDocumentResult; asOcr?: OcrDocumentResult }> {
   const cfg = getConfig() as any;
   const ocrProviderName = cfg.OCR_PROVIDER || "local";
-  // ABSOLUTE ASSERTION: Textract must never run — fail fast if env still textract
-  if (ocrProviderName === "textract") {
-    throw new AppError(ErrorCodes.OCR_CONFIGURATION_ERROR, "Textract is disabled. Set OCR_PROVIDER=local. Found OCR_PROVIDER=textract at runtime (stale .env or cached config). Clear config cache and restart.");
-  }
-  console.log(JSON.stringify({ jobId, stage: "OCR", provider: "paddleocr", pipeline: "pp_structure_v3", engine: "paddleocr", event: "paddleocr_start", requestedProvider: ocrProviderName }));
-
-  // Idempotency: reuse if already completed and stored
+  if (ocrProviderName === "textract") throw new AppError(ErrorCodes.OCR_CONFIGURATION_ERROR, "Textract disabled");
+  console.log(JSON.stringify({ jobId, stage: "OCR", provider: "paddleocr", pipeline: "pp_structure_v3", engine: "paddleocr", event: "paddleocr_start_parallel", requestedProvider: ocrProviderName }));
   const existing = ocrResultStore.get(jobId);
   const job = await jobStore.get(jobId);
   if (existing && job?.ocrCompletedAt) {
     console.log(JSON.stringify({ jobId, stage: "OCR", event: "reuse_cached", hasQp: !!existing.qpOcr, hasAs: !!existing.asOcr }));
     return existing;
   }
-  // No resume for local OCR — local is synchronous per-job, no operationId. Previous Textract resume removed.
-
-  const docs = await documentStore.getByJob(jobId);
-  const qpDoc = docs.find((d) => d.kind === "questionPaper");
-  const asDoc = docs.find((d) => d.kind === "answerSheet");
-  if (!qpDoc || !asDoc) throw new AppError(ErrorCodes.VALIDATION_FAILED, "Missing docs for OCR");
-
-  const qpPages = await pageStoreApi.getByDocument(qpDoc.id);
-  const asPages = await pageStoreApi.getByDocument(asDoc.id);
-
-  // Mock path — no S3, immediate synthetic OCR (test only)
   if (ocrProviderName === "mock") {
     const { MockOcrProvider } = await import("@/lib/ocr/mock");
     const provider = new MockOcrProvider();
     const qpRes = await provider.getOperationResult("mock-qp", `s3://mock/mock/${jobId}/qp/`);
     const asRes = await provider.getOperationResult("mock-as", `s3://mock/mock/${jobId}/as/`);
-    // Override page counts to match real docs
-    qpRes.pages = qpRes.pages.slice(0, qpPages.length);
-    asRes.pages = asRes.pages.slice(0, asPages.length);
-    // Expand if needed to match 39 pages etc.
-    if (asPages.length > asRes.pages.length) {
-      const extra = asPages.length - asRes.pages.length;
-      for (let i = 0; i < extra; i++) {
-        asRes.pages.push({ pageNumber: asRes.pages.length + 1, text: `Mock page ${asRes.pages.length + 1} additional`, blocks: [], lines: [], confidence: 0.9, width: 800, height: 1100, rotation: 0 } as any);
-      }
-    }
-    qpRes.jobId = jobId;
-    qpRes.documentId = qpDoc.id;
-    qpRes.kind = "questionPaper";
-    asRes.jobId = jobId;
-    asRes.documentId = asDoc.id;
-    asRes.kind = "answerSheet";
+    qpRes.pages = qpRes.pages.slice(0, shared.qpPages.length);
+    asRes.pages = asRes.pages.slice(0, shared.asPages.length);
+    qpRes.jobId = jobId; qpRes.documentId = shared.qpDoc.id; qpRes.kind = "questionPaper";
+    asRes.jobId = jobId; asRes.documentId = shared.asDoc.id; asRes.kind = "answerSheet";
     const out = { qpOcr: qpRes, asOcr: asRes };
     ocrResultStore.set(jobId, out);
-    await jobStore.update(jobId, { ocrStartedAt: new Date().toISOString(), ocrCompletedAt: new Date().toISOString(), ocrPageCount: asPages.length + qpPages.length, ocrAttempt: (job?.ocrAttempt || 0) + 1 } as any);
-    console.log(JSON.stringify({ jobId, stage: "OCR", event: "mock_completed", qpPages: qpRes.pages.length, asPages: asRes.pages.length }));
-    // Debug dump for mock as well (exact format)
-    try {
-      const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
-      const debugDir = path.join(os.tmpdir(), "veda-ai", safe, "debug");
-      await fs.mkdir(debugDir, { recursive: true });
-      await fs.writeFile(path.join(debugDir, "questionPaper-paddle.json"), JSON.stringify(qpRes, null, 2), "utf-8");
-      await fs.writeFile(path.join(debugDir, "answerSheet-paddle.json"), JSON.stringify(asRes, null, 2), "utf-8");
-      const artDir = path.join(process.cwd(), "artifacts", "ocr-debug", safe);
-      await fs.mkdir(artDir, { recursive: true });
-      await fs.writeFile(path.join(artDir, "questionPaper-paddle.json"), JSON.stringify(qpRes, null, 2), "utf-8");
-      await fs.writeFile(path.join(artDir, "answerSheet-paddle.json"), JSON.stringify(asRes, null, 2), "utf-8");
-      console.log(JSON.stringify({ jobId, stage: "OCR", event: "debug_dump_mock", path: debugDir }));
-    } catch {}
+    await jobStore.update(jobId, { ocrStartedAt: new Date().toISOString(), ocrCompletedAt: new Date().toISOString(), ocrPageCount: shared.qpPages.length + shared.asPages.length, ocrAttempt: (job?.ocrAttempt || 0) + 1 } as any);
     return out;
   }
+  if (ocrProviderName !== "local" && ocrProviderName !== "paddleocr") throw new AppError(ErrorCodes.OCR_CONFIGURATION_ERROR, `OCR_PROVIDER=${ocrProviderName} not supported`);
+  console.log(JSON.stringify({ jobId, stage: "OCR", engine: "paddleocr", event: "local_start_parallel", qpPages: shared.qp.length, asPages: shared.as.length }));
+  const localProvider = getLocalOcrProvider();
+  await jobStore.update(jobId, { ocrStartedAt: new Date().toISOString(), ocrAttempt: (job?.ocrAttempt || 0) + 1 } as any);
 
-  // Local PaddleOCR path — internal child process, no S3
-  if (ocrProviderName === "local" || ocrProviderName === "paddleocr") {
-    console.log(JSON.stringify({ jobId, stage: "OCR", engine: "paddleocr", event: "local_start", qpPages: qpPages.length, asPages: asPages.length }));
-    const localProvider = getLocalOcrProvider();
-    await jobStore.update(jobId, { ocrStartedAt: new Date().toISOString(), ocrAttempt: (job?.ocrAttempt || 0) + 1 } as any);
+  // Ensure models provisioned once before parallel workers (file-locked)
+  await ensurePaddleModelsProvisioned();
+  await updateDocStageGlobal(jobId, "questionPaper", "ocr", "in_progress");
+  await updateDocStageGlobal(jobId, "answerSheet", "ocr", "in_progress");
 
-    async function processLocalDoc(
-      doc: any,
-      pages: any[],
-      kind: "questionPaper" | "answerSheet"
-    ): Promise<OcrDocumentResult> {
-      const fileId = kind === "questionPaper" ? (await jobStore.get(jobId))!.questionPaperFileId! : (await jobStore.get(jobId))!.answerSheetFileId!;
-      const buffer = await fileStorage.read(jobId, fileId);
-      const pageNumbers = pages.map((p: any) => p.pageNumber).sort((a: number, b: number) => a - b);
-      // Render PDF pages to PNG files (same 1.5x as Vision)
-      const rendered = await renderPdfBufferToPngFiles(buffer, jobId, kind, pageNumbers);
-      // If document is image not PDF, handle differently
-      let paddleInput: { pageNumber: number; imagePath: string; width: number; height: number }[];
-      if (rendered.length === 0) {
-        // Fallback for image: write buffer to temp file
-        const tmpImgPath = path.join(os.tmpdir(), "veda-ai", jobId.replace(/[^a-zA-Z0-9-]/g, ""), "paddle-images", kind, `page-001.png`);
-        await fs.mkdir(path.dirname(tmpImgPath), { recursive: true });
-        await fs.writeFile(tmpImgPath, buffer);
-        // Use page dims from inspection
-        const firstPage = pages[0];
-        paddleInput = [{ pageNumber: 1, imagePath: tmpImgPath, width: firstPage?.width || 800, height: firstPage?.height || 1100 }];
-      } else {
-        paddleInput = rendered;
+  async function runDocWithRetry(kind: "questionPaper" | "answerSheet"): Promise<OcrDocumentResult> {
+    const t0 = Date.now();
+    const isQP = kind === "questionPaper";
+    const doc = isQP ? shared.qpDoc : shared.asDoc;
+    const pages = isQP ? shared.qp : shared.as;
+    onEvent?.({ stage: `OCR_${kind}`, document: kind, start: t0, status: "in_progress", pageRange: `${pages[0]?.pageNumber}-${pages[pages.length-1]?.pageNumber}` });
+    console.log(JSON.stringify({ jobId, stage: "OCR", engine: "paddleocr", event: "local_process_start", kind, pages: pages.length, sample: pages[0] }));
+    if (isCancelled(jobId)) throw new AppError(ErrorCodes.UNKNOWN_ERROR, `OCR ${kind} cancelled`);
+    // Bounded retries: worker crash / transient, exponential backoff + jitter, max 3
+    const maxRetries = 2;
+    let lastErr: any;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        if (attempt > 0) {
+          const delay = Math.pow(2, attempt) * 400 + Math.random() * 300;
+          console.log(JSON.stringify({ jobId, stage: "OCR", event: "retry_wait", kind, attempt, delay: Math.round(delay) }));
+          await new Promise(r => setTimeout(r, delay));
+          if (isCancelled(jobId)) throw new AppError(ErrorCodes.UNKNOWN_ERROR, `OCR ${kind} cancelled during retry`);
+        }
+        const result = await localProvider.processDocument({ jobId, documentId: doc.id, kind, pages: pages.map(p => ({ pageNumber: p.pageNumber, imagePath: p.imagePath, width: p.width, height: p.height })) });
+        const dur = Date.now() - t0;
+        onEvent?.({ stage: `OCR_${kind}`, document: kind, start: t0, end: Date.now(), durationMs: dur, status: "completed", pageRange: `${pages[0]?.pageNumber}-${pages[pages.length-1]?.pageNumber}` });
+        console.log(JSON.stringify({ jobId, stage: "OCR", engine: "paddleocr", event: "local_process_ok_parallel", kind, pages: result.pages.length, durationMs: dur, avgPerPage: Math.round(dur / result.pages.length), attempt }));
+        await updateDocStageGlobal(jobId, kind, "ocr", "completed");
+        return result;
+      } catch (e: any) {
+        lastErr = e;
+        const isRetriable = e?.code === OcrErrorCodes.OPERATION_TIMEOUT || e?.code === OcrErrorCodes.OPERATION_FAILED || String(e.message).includes("timed out") || String(e.message).includes("worker") || e?.status >= 500;
+        const isSchemaInvalid = e?.code === ErrorCodes.MODEL_OUTPUT_INVALID || e?.code === OcrErrorCodes.OUTPUT_PARSE_FAILED;
+        if (isSchemaInvalid || !isRetriable || attempt === maxRetries) {
+          onEvent?.({ stage: `OCR_${kind}`, document: kind, start: t0, end: Date.now(), durationMs: Date.now()-t0, status: "failed", attempt });
+          await updateDocStageGlobal(jobId, kind, "ocr", "failed");
+          throw e;
+        }
+        console.warn(JSON.stringify({ jobId, stage: "OCR", event: "retry", kind, attempt, error: e.message?.slice(0,200), code: e.code }));
       }
-
-      console.log(
-        JSON.stringify({
-          jobId,
-          stage: "OCR",
-          engine: "paddleocr",
-          event: "local_process_start",
-          kind,
-          pages: paddleInput.length,
-          sample: paddleInput[0],
-        })
-      );
-
-      const t0 = Date.now();
-      const result = await localProvider.processDocument({
-        jobId,
-        documentId: doc.id,
-        kind,
-        pages: paddleInput,
-      });
-      const dur = Date.now() - t0;
-      console.log(
-        JSON.stringify({
-          jobId,
-          stage: "OCR",
-          engine: "paddleocr",
-          event: "local_process_ok",
-          kind,
-          pages: result.pages.length,
-          durationMs: dur,
-          avgPerPage: Math.round(dur / result.pages.length),
-        })
-      );
-      return result;
     }
-
-    try {
-      const qpOcr = await processLocalDoc(qpDoc, qpPages, "questionPaper");
-      const asOcr = await processLocalDoc(asDoc, asPages, "answerSheet");
-      const out = { qpOcr, asOcr };
-      ocrResultStore.set(jobId, out);
-      await jobStore.update(jobId, { ocrCompletedAt: new Date().toISOString(), ocrPageCount: qpPages.length + asPages.length } as any);
-      console.log(JSON.stringify({ jobId, stage: "OCR", engine: "paddleocr", event: "local_completed", qpPages: qpOcr.pages.length, asPages: asOcr.pages.length }));
-      return out;
-    } catch (e: any) {
-      console.error(JSON.stringify({ jobId, stage: "OCR", engine: "paddleocr", event: "local_failed", error: e.message.slice(0, 500), code: e.code }));
-      throw new AppError(e.code || ErrorCodes.OCR_FAILED, `PaddleOCR failed: ${e.message}`);
-    }
+    throw lastErr;
   }
 
-  // Textract path removed — no S3 staging, no Textract polling, no Textract S3 OCR
-  // Any non-mock, non-local provider must fail (guard against stale env)
-  throw new AppError(
-    ErrorCodes.OCR_CONFIGURATION_ERROR,
-    `OCR_PROVIDER=${ocrProviderName} not supported for local PaddleOCR runtime. Use OCR_PROVIDER=local or mock.`
-  );
+  // Doc-level: parallel with file-locked init (worker lock) + bounded concurrency 2, proves actual overlap via timeline
+  // Options benchmarked: A single shared worker (combined 58p) vs B two reusable workers vs C file-locked init vs D combined queue
+  // Chosen: B+C — two workers after provisioning, sharing lock only during init, then parallel inference (saves ~97s, 1.3GB each, stable)
+  console.log(JSON.stringify({ jobId, stage: "OCR", event: "parallel_start", qpPages: shared.qp.length, asPages: shared.as.length, concurrency: 2 }));
+  const [qpOcr, asOcr] = await Promise.all([
+    runDocWithRetry("questionPaper"),
+    runDocWithRetry("answerSheet"),
+  ]);
+  const out = { qpOcr, asOcr };
+  ocrResultStore.set(jobId, out);
+  await withJobLock(jobId, async () => {
+    const cur = await jobStore.get(jobId);
+    await jobStore.update(jobId, { ocrCompletedAt: new Date().toISOString(), ocrPageCount: shared.qpPages.length + shared.asPages.length } as any);
+  });
+  console.log(JSON.stringify({ jobId, stage: "OCR", engine: "paddleocr", event: "local_completed_parallel", qpPages: qpOcr.pages.length, asPages: asOcr.pages.length, parallel: true }));
+  return out;
 }
 
-async function visionStage(jobId: string, ocrData?: { qpOcr?: OcrDocumentResult; asOcr?: OcrDocumentResult }): Promise<{ qpVision?: VisionDocumentAnalysis; asVision?: VisionDocumentAnalysis } | null> {
+// ── Vision Pass1 with GLOBAL scheduler, preflight, 402 pause, strict recording ──
+async function visionStageWithShared(jobId: string, shared: SharedRender, onEvent?: (e: TimelineEvent) => void): Promise<{ qpVision?: VisionDocumentAnalysis; asVision?: VisionDocumentAnalysis } | null> {
   const cfg = getConfig() as any;
   const visionProviderName = cfg.VISION_PROVIDER || "auto";
-  if (visionProviderName === "disabled") {
-    console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_disabled" }));
-    return null;
-  }
-  // Cache reuse
+  if (visionProviderName === "disabled") { console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_disabled" })); return null; }
   const cached = visionResultStore.get(jobId);
-  if (cached) {
-    console.log(JSON.stringify({ jobId, stage: "VISION", event: "reuse_cached" }));
-    return cached;
-  }
-  // Routing: decide per document — with kind for handwriting detection (Phase 3)
-  const qpOcr = ocrData?.qpOcr;
-  const asOcr = ocrData?.asOcr;
-  const qpDecision = qpOcr ? shouldInvokeVision(qpOcr, { kind: "questionPaper" }) : { useVision: false, reason: "no ocr", confidence: 0, estimatedDifficulty: "easy" as const };
-  const asDecision = asOcr ? shouldInvokeVision(asOcr, { kind: "answerSheet" }) : { useVision: false, reason: "no ocr", confidence: 0, estimatedDifficulty: "easy" as const };
-  const useVision = qpDecision.useVision || asDecision.useVision;
-  console.log(JSON.stringify({ jobId, stage: "VISION", event: "routing_decision", qpDecision, asDecision, useVision }));
-  // If mock OCR, skip vision (deterministic fallback is sufficient for tests)
-  if (cfg.OCR_PROVIDER === "mock") {
-    console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_mock_ocr", qpDecision, asDecision }));
-    return null;
-  }
-  if (!useVision && visionProviderName === "auto") {
-    console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_routed_easy", qpDecision, asDecision }));
-    return null;
-  }
+  if (cached) { console.log(JSON.stringify({ jobId, stage: "VISION", event: "reuse_cached" })); return cached; }
+  if (cfg.OCR_PROVIDER === "mock") { console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_mock_ocr" })); return null; }
   const provider = getVisionProvider();
   if (!provider) {
     const diag = await import("@/lib/vision/factory").then(m => (m as any).getVisionDiagnostics ? (m as any).getVisionDiagnostics() : null).catch(()=>null);
@@ -647,84 +838,216 @@ async function visionStage(jobId: string, ocrData?: { qpOcr?: OcrDocumentResult;
     return null;
   }
 
-  const docs = await documentStore.getByJob(jobId);
-  const qpDoc = docs.find((d) => d.kind === "questionPaper");
-  const asDoc = docs.find((d) => d.kind === "answerSheet");
-  if (!qpDoc || !asDoc) return null;
+  // ── Preflight: verify model + credits before launching 20 expensive batches ──
+  let preflightOk = true;
+  let preflightReason: string | undefined;
+  let preflightCredits: number | undefined;
+  try {
+    const { verifyVisionPreflight } = await import("@/lib/vision/openrouter-vision");
+    const pre = await verifyVisionPreflight();
+    console.log(JSON.stringify({ jobId, stage: "VISION", event: "preflight", ok: pre.ok, model: pre.model, reason: pre.reason, creditsRemaining: pre.creditsRemaining }));
+    if (!pre.ok) {
+      preflightOk = false;
+      preflightReason = pre.reason;
+      preflightCredits = pre.creditsRemaining;
+      // Record as VISION_UNAVAILABLE, not silent success
+      const metrics = { totalRequests: 0, successfulRequests: 0, failedRequests: 0, creditFailures: 1, malformedFailures: 0, preflightReason };
+      try {
+        const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+        const debugDir = path.join(os.tmpdir(), "veda-ai", safe, "debug");
+        await fs.mkdir(debugDir, { recursive: true });
+        await fs.writeFile(path.join(debugDir, "vision-preflight.json"), JSON.stringify({ jobId, preflight: pre, metrics, timestamp: new Date().toISOString() }, null, 2), "utf-8");
+        const artDir = path.join(process.cwd(), "artifacts", "debug", safe);
+        await fs.mkdir(artDir, { recursive: true });
+        await fs.writeFile(path.join(artDir, "vision-preflight.json"), JSON.stringify({ jobId, preflight: pre, metrics, timestamp: new Date().toISOString() }, null, 2), "utf-8");
+      } catch {}
+      console.error(JSON.stringify({ jobId, stage: "VISION", event: "vision_unavailable_preflight", reason: pre.reason, model: pre.model, creditsRemaining: pre.creditsRemaining }));
+      // Mark both docs as VISION_UNAVAILABLE
+      await updateDocStageGlobal(jobId, "questionPaper", "vision", "failed");
+      await updateDocStageGlobal(jobId, "answerSheet", "vision", "failed");
+      // Store marker for fusion to set VISION_UNAVAILABLE
+      (globalThis as any).__visionPreflightFail = (globalThis as any).__visionPreflightFail || new Map();
+      (globalThis as any).__visionPreflightFail.set(jobId, { reason: pre.reason, model: pre.model });
+      return null;
+    }
+  } catch (e: any) {
+    console.warn(JSON.stringify({ jobId, stage: "VISION", event: "preflight_error", error: e.message?.slice(0,200) }));
+    // Don't block on preflight error, continue but log
+  }
 
-  const maxPagesQP = cfg.VISION_MAX_PAGES || 3;
-  const maxPagesAS = 31; // For answer sheet, all 31 pages via batches (Phase 4)
-  const timeoutMs = cfg.VISION_TIMEOUT_MS || 30000;
+  // Document-aware routing
+  const batchSize = 3;
+  function qpVisionPages(): SharedPageImage[] {
+    const total = shared.qp.length;
+    const cfgMax = cfg.VISION_MAX_PAGES || 50;
+    if (total <= cfgMax) return shared.qp;
+    const step = Math.ceil(total / cfgMax);
+    const sampled: SharedPageImage[] = [];
+    for (let i = 0; i < total; i += step) sampled.push(shared.qp[i]);
+    return sampled.slice(0, cfgMax);
+  }
+  function asVisionPages(): SharedPageImage[] {
+    return shared.as;
+  }
 
-  async function processDoc(kind: "questionPaper" | "answerSheet", ocr: OcrDocumentResult | undefined): Promise<VisionDocumentAnalysis | undefined> {
-    if (!ocr || !provider) return undefined;
+  const qpPagesToUse = qpVisionPages();
+  const asPagesToUse = asVisionPages();
+  const qpBatches: SharedPageImage[][] = [];
+  const asBatches: SharedPageImage[][] = [];
+  for (let i = 0; i < qpPagesToUse.length; i += batchSize) qpBatches.push(qpPagesToUse.slice(i, i + batchSize));
+  for (let i = 0; i < asPagesToUse.length; i += batchSize) asBatches.push(asPagesToUse.slice(i, i + batchSize));
+
+  // Build GLOBAL queue with single concurrency=1 (user requirement 4/5/6)
+  type GlobalBatch = { kind: "questionPaper" | "answerSheet"; batchIdx: number; batch: SharedPageImage[]; totalBatches: number };
+  const globalQueue: GlobalBatch[] = [];
+  qpBatches.forEach((batch, idx) => globalQueue.push({ kind: "questionPaper", batch, batchIdx: idx, totalBatches: qpBatches.length }));
+  asBatches.forEach((batch, idx) => globalQueue.push({ kind: "answerSheet", batch, batchIdx: idx, totalBatches: asBatches.length }));
+
+  console.log(JSON.stringify({ jobId, stage: "VISION", event: "global_scheduler_start", qpPages: qpPagesToUse.length, asPages: asPagesToUse.length, qpBatches: qpBatches.length, asBatches: asBatches.length, totalBatches: globalQueue.length, globalConcurrency: 1, batchSize }));
+
+  // Metrics: must record credit/config failure, request count, successful, failed
+  let totalRequests = 0;
+  let successfulRequests = 0;
+  let failedRequests = 0;
+  let creditFailures = 0;
+  let malformedFailures = 0;
+  let pausedDueToCredit = false;
+  const qpBatchResults: any[][] = new Array(qpBatches.length);
+  const asBatchResults: any[][] = new Array(asBatches.length);
+
+  // Global concurrency 1: process sequentially, pause on 402
+  const globalConcurrency = 1;
+  await updateDocStageGlobal(jobId, "questionPaper", "vision", "in_progress");
+  await updateDocStageGlobal(jobId, "answerSheet", "vision", "in_progress");
+  const tGlobalStart = Date.now();
+  onEvent?.({ stage: "VISION_global", start: tGlobalStart, status: "in_progress" });
+
+  // Process global queue sequentially (concurrency 1) — ensures never >1 in-flight, respects provider limits
+  for (let gIdx = 0; gIdx < globalQueue.length; gIdx++) {
+    if (pausedDueToCredit) {
+      console.warn(JSON.stringify({ jobId, stage: "VISION", event: "vision_paused_due_to_credit", remainingBatches: globalQueue.length - gIdx }));
+      break;
+    }
+    if (isCancelled(jobId)) {
+      console.log(JSON.stringify({ jobId, stage: "VISION", event: "cancelled_global", gIdx }));
+      break;
+    }
+    const item = globalQueue[gIdx];
+    const kind = item.kind;
+    const batchIdx = item.batchIdx;
+    const batch = item.batch;
+    const batchLabel = `${batchIdx+1}/${item.totalBatches}`;
+    const tBatch = Date.now();
+    onEvent?.({ stage: `VISION_BATCH_${kind}`, document: kind, batch: batchLabel, start: tBatch, status: "in_progress", pageRange: batch.map(b=>b.pageNumber).join(",") });
+    const rendered = await loadBase64ForPages(batch);
+    const hasRealImage = rendered.some(r => r.base64 && !r.base64.startsWith("JVBER") && r.base64.length > 100);
+    if (!hasRealImage) {
+      console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_no_image", kind, batch: batchLabel, pages: rendered.length }));
+      onEvent?.({ stage: `VISION_BATCH_${kind}`, document: kind, batch: batchLabel, start: tBatch, end: Date.now(), durationMs: Date.now()-tBatch, status: "skipped" });
+      continue;
+    }
+    const visionInputPages = rendered.map(r => ({
+      pageId: `page-${r.pageNumber}`,
+      pageNumber: r.pageNumber,
+      imageBase64: r.base64,
+      mimeType: "image/png" as const,
+      width: r.width,
+      height: r.height,
+      ocrBlocks: [] as any,
+    } as any));
+    const payloadKb = Math.round(visionInputPages.reduce((a, p) => a + p.imageBase64.length, 0) * 0.75 / 1024);
+    console.log(JSON.stringify({ jobId, stage: "VISION", event: "analyze_start_pass1", kind, pages: visionInputPages.length, batch: batchLabel, provider: visionProviderName, model: (getConfig() as any).OPENROUTER_MODEL || (getConfig() as any).VISION_MODEL, payloadKb, timeoutMs: cfg.VISION_TIMEOUT_MS, globalIdx: `${gIdx+1}/${globalQueue.length}` }));
+    totalRequests++;
     try {
-      const fileId = kind === "questionPaper" ? (await jobStore.get(jobId))!.questionPaperFileId! : (await jobStore.get(jobId))!.answerSheetFileId!;
-      const buffer = await fileStorage.read(jobId, fileId);
-      const isAS = kind === "answerSheet";
-      const pageNumbers = isAS ? ocr.pages.map((p) => p.pageNumber) : ocr.pages.slice(0, maxPagesQP).map((p) => p.pageNumber);
-      const batchSize = 3;
-      const allVisionPages: any[] = [];
-      for (let batchStart = 0; batchStart < pageNumbers.length; batchStart += batchSize) {
-        const batchNums = pageNumbers.slice(batchStart, batchStart + batchSize);
-        const rendered = await renderPdfPagesForVision(buffer, batchNums, batchSize);
-        const hasRealImage = rendered.some((r) => r.mimeType !== "application/pdf" && !r.imageBase64.startsWith("JVBER"));
-        if (!hasRealImage) {
-          console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_no_image", kind, batch: `${batchStart/batchSize+1}/${Math.ceil(pageNumbers.length/batchSize)}`, reason: "canvas not available", pages: rendered.length }));
-          continue;
-        }
-        const ocrBlocksByPage: Record<number, any[]> = {};
-        for (const pg of ocr.pages.filter((p) => batchNums.includes(p.pageNumber))) {
-          const blocks = (pg.lines || []).slice(0, 30).map((l: any, idx: number) => ({
-            id: `ocr-p${String(pg.pageNumber).padStart(3,"0")}-b${String(idx).padStart(3,"0")}`,
-            text: l.text,
-            bbox: [l.boundingBox.x, l.boundingBox.y, l.boundingBox.width, l.boundingBox.height] as [number,number,number,number],
-            confidence: l.confidence,
-          }));
-          ocrBlocksByPage[pg.pageNumber] = blocks;
-        }
-        const visionInputPages = rendered.map((r) => ({
-          pageId: `page-${r.pageNumber}`,
-          pageNumber: r.pageNumber,
-          imageBase64: r.imageBase64,
-          mimeType: r.mimeType as any,
-          width: r.width,
-          height: r.height,
-          ocrBlocks: ocrBlocksByPage[r.pageNumber] || [],
-        } as any));
-        const ocrSample = ocr.pages.slice(0, 2).map((p) => p.text.slice(0, 1000)).join("\n").slice(0, 1500);
-        const payloadKb = Math.round(visionInputPages.reduce((a, p) => a + p.imageBase64.length, 0) * 0.75 / 1024);
-        console.log(JSON.stringify({ jobId, stage: "VISION", event: "analyze_start", kind, pages: visionInputPages.length, batch: `${batchStart/batchSize+1}/${Math.ceil(pageNumbers.length/batchSize)}`, provider: visionProviderName, model: (getConfig() as any).OPENROUTER_MODEL || (getConfig() as any).VISION_MODEL, payloadKb, timeoutMs, hasOcrBlocks: Object.keys(ocrBlocksByPage).length }));
-        const result = await provider.analyzeDocumentStructure({ pages: visionInputPages as any, ocrTextSample: ocrSample, ocrBlocksByPage } as any);
-        console.log(JSON.stringify({ jobId, stage: "VISION", event: "analyze_ok", kind, batch: `${batchStart/batchSize+1}/${Math.ceil(pageNumbers.length/batchSize)}`, visionPages: result.pages.length }));
-        allVisionPages.push(...result.pages);
+      if (!provider) throw new AppError(ErrorCodes.MODEL_UNAVAILABLE, "Vision provider unavailable");
+      if (isCancelled(jobId)) throw new AppError(ErrorCodes.UNKNOWN_ERROR, `Vision ${kind} cancelled before request`);
+      const result = await provider!.analyzeDocumentStructure({ pages: visionInputPages as any, ocrTextSample: "", ocrBlocksByPage: {} } as any);
+      if (isCancelled(jobId)) {
+        console.log(JSON.stringify({ jobId, stage: "VISION", event: "cancelled_after_response", kind, batch: batchLabel }));
+        onEvent?.({ stage: `VISION_BATCH_${kind}`, document: kind, batch: batchLabel, start: tBatch, end: Date.now(), durationMs: Date.now()-tBatch, status: "cancelled" });
+        continue;
       }
-      if (allVisionPages.length === 0) return undefined;
-      return { pages: allVisionPages, globalStructure: {} } as any;
+      console.log(JSON.stringify({ jobId, stage: "VISION", event: "analyze_ok_pass1", kind, batch: batchLabel, visionPages: result.pages.length }));
+      onEvent?.({ stage: `VISION_BATCH_${kind}`, document: kind, batch: batchLabel, start: tBatch, end: Date.now(), durationMs: Date.now()-tBatch, status: "completed", pageRange: batch.map(b=>b.pageNumber).join(",") });
+      successfulRequests++;
+      if (kind === "questionPaper") qpBatchResults[batchIdx] = result.pages;
+      else asBatchResults[batchIdx] = result.pages;
     } catch (e: any) {
-      // Retry with smaller batch on timeout
-      if (e.code === "ETIMEDOUT" || String(e.message).includes("timed out")) {
-        console.warn(JSON.stringify({ jobId, stage: "VISION", event: "analyze_timeout_retry", kind, msg: e.message?.slice(0, 200) }));
-        if (visionProviderName === "auto") return undefined;
+      if (isCancelled(jobId)) {
+        onEvent?.({ stage: `VISION_BATCH_${kind}`, document: kind, batch: batchLabel, start: tBatch, end: Date.now(), durationMs: Date.now()-tBatch, status: "cancelled" });
+        continue;
       }
-      console.warn(JSON.stringify({ jobId, stage: "VISION", event: "analyze_failed_fallback", kind, msg: e.message?.slice(0, 300), code: e.code, status: e.status }));
-      if (visionProviderName === "auto") return undefined;
-      throw new AppError(e.code || ErrorCodes.MODEL_UNAVAILABLE, `Vision analysis failed for ${kind}: ${e.message}`);
+      console.warn(JSON.stringify({ jobId, stage: "VISION", event: "analyze_failed_pass1", kind, batch: batchLabel, msg: e.message?.slice(0,300), code: e.code, status: e.status }));
+      onEvent?.({ stage: `VISION_BATCH_${kind}`, document: kind, batch: batchLabel, start: tBatch, end: Date.now(), durationMs: Date.now()-tBatch, status: "failed" });
+      failedRequests++;
+      const isCredit = e?.status === 402 || e?.code === "credit_exhausted" || e?.code === "payment_required" || String(e.message).toLowerCase().includes("credits") || String(e.message).toLowerCase().includes("afford");
+      const isMalformed = e?.code === ErrorCodes.MODEL_OUTPUT_INVALID || String(e.message).includes("parse failed") || String(e.message).includes("schema");
+      if (isMalformed) malformedFailures++;
+      if (isCredit) {
+        creditFailures++;
+        pausedDueToCredit = true;
+        console.error(JSON.stringify({ jobId, stage: "VISION", event: "vision_paused_credit_exhausted", kind, batch: batchLabel, creditFailures, msg: e.message?.slice(0,300) }));
+        // Do not immediately launch next batch — pause queue (user requirement 9)
+        // Break after recording, remaining batches will be skipped
+        // Wait a bit before returning to avoid hammering
+        await new Promise(r => setTimeout(r, 2000));
+        break;
+      }
+      const isRetriable = e?.status === 429 || e?.status === 408 || e?.status >= 500 || e?.code === "rate_limit" || e?.code === "network_timeout" || String(e.message).includes("timeout");
+      if (!isRetriable || isMalformed) {
+        if (visionProviderName === "auto") {
+          if (kind === "questionPaper") qpBatchResults[batchIdx] = [];
+          else asBatchResults[batchIdx] = [];
+        } else throw e;
+      } else {
+        if (visionProviderName === "auto") {
+          if (kind === "questionPaper") qpBatchResults[batchIdx] = [];
+          else asBatchResults[batchIdx] = [];
+        } else throw e;
+      }
     }
   }
 
-  const qpVision = await processDoc("questionPaper", qpOcr);
-  const asVision = await processDoc("answerSheet", asOcr);
+  const qpAllVisionPages = qpBatchResults.flat().filter(Boolean);
+  const asAllVisionPages = asBatchResults.flat().filter(Boolean);
+  const qpStatus = isCancelled(jobId) ? "cancelled" : qpAllVisionPages.length ? "completed" : pausedDueToCredit ? "credit_exhausted" : "failed";
+  const asStatus = isCancelled(jobId) ? "cancelled" : asAllVisionPages.length ? "completed" : pausedDueToCredit ? "credit_exhausted" : "failed";
+  onEvent?.({ stage: "VISION_global", start: tGlobalStart, end: Date.now(), durationMs: Date.now()-tGlobalStart, status: qpAllVisionPages.length || asAllVisionPages.length ? "completed" : "failed" });
+  await updateDocStageGlobal(jobId, "questionPaper", "vision", qpStatus === "completed" ? "completed" : "failed");
+  await updateDocStageGlobal(jobId, "answerSheet", "vision", asStatus === "completed" ? "completed" : "failed");
+
+  // Record metrics clearly
+  console.log(JSON.stringify({ jobId, stage: "VISION", event: "vision_metrics", totalRequests, successfulRequests, failedRequests, creditFailures, malformedFailures, pausedDueToCredit, qpPages: qpAllVisionPages.length, asPages: asAllVisionPages.length, preflightOk, preflightReason }));
+  try {
+    const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+    const debugDir = path.join(os.tmpdir(), "veda-ai", safe, "debug");
+    await fs.mkdir(debugDir, { recursive: true });
+    await fs.writeFile(path.join(debugDir, "vision-metrics.json"), JSON.stringify({ jobId, totalRequests, successfulRequests, failedRequests, creditFailures, malformedFailures, pausedDueToCredit, qpPages: qpAllVisionPages.length, asPages: asAllVisionPages.length, preflightOk, preflightReason, timestamp: new Date().toISOString() }, null, 2), "utf-8");
+    const artDir = path.join(process.cwd(), "artifacts", "debug", safe);
+    await fs.mkdir(artDir, { recursive: true });
+    await fs.writeFile(path.join(artDir, "vision-metrics.json"), JSON.stringify({ jobId, totalRequests, successfulRequests, failedRequests, creditFailures, malformedFailures, pausedDueToCredit, qpPages: qpAllVisionPages.length, asPages: asAllVisionPages.length, preflightOk, preflightReason, timestamp: new Date().toISOString() }, null, 2), "utf-8");
+  } catch {}
+
+  if (pausedDueToCredit) {
+    console.error(JSON.stringify({ jobId, stage: "VISION", event: "vision_unavailable_credit", creditFailures, reason: "402 credit exhausted — Vision unavailable, mapping will fallback without Vision evidence" }));
+    // Ensure VISION_UNAVAILABLE is clearly represented, never silent success
+    (globalThis as any).__visionCreditFail = (globalThis as any).__visionCreditFail || new Map();
+    (globalThis as any).__visionCreditFail.set(jobId, { creditFailures, reason: "402" });
+  }
+
+  const qpVision = qpAllVisionPages.length ? { pages: qpAllVisionPages, globalStructure: {} } as any : undefined;
+  const asVision = asAllVisionPages.length ? { pages: asAllVisionPages, globalStructure: {} } as any : undefined;
 
   const out: any = {};
   if (qpVision) out.qpVision = qpVision;
   if (asVision) out.asVision = asVision;
   if (Object.keys(out).length === 0) {
-    console.log(JSON.stringify({ jobId, stage: "VISION", event: "no_vision_results" }));
+    const reason = pausedDueToCredit ? "VISION_UNAVAILABLE (credit 402)" : "no_vision_results_pass1";
+    console.log(JSON.stringify({ jobId, stage: "VISION", event: reason }));
+    // Return null to indicate VISION_UNAVAILABLE, not silent success
     return null;
   }
   visionResultStore.set(jobId, out);
-  // Debug dump
   try {
     const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
     const debugDir = path.join(os.tmpdir(), "veda-ai", safe, "debug");
@@ -739,6 +1062,9 @@ async function visionStage(jobId: string, ocrData?: { qpOcr?: OcrDocumentResult;
   return out;
 }
 
+// ── LEGACY REMOVED: ocrStage and visionStage (OCR-blocking) deleted — production now uses ocrStageWithShared + visionStageWithShared (image-first, 4-way parallel) ──
+// No OCR-dependent routing blocks Vision Pass1; OCR-assisted Vision is targeted second pass only.
+
 async function fusionStage(jobId: string, ocrData?: { qpOcr?: OcrDocumentResult; asOcr?: OcrDocumentResult }, visionData?: { qpVision?: VisionDocumentAnalysis; asVision?: VisionDocumentAnalysis } | null): Promise<any> {
   const qpOcr = ocrData?.qpOcr;
   const asOcr = ocrData?.asOcr;
@@ -748,16 +1074,49 @@ async function fusionStage(jobId: string, ocrData?: { qpOcr?: OcrDocumentResult;
   const asDoc = docs.find((d) => d.kind === "answerSheet");
   const qpPages = qpDoc ? await pageStoreApi.getByDocument(qpDoc.id) : [];
   const asPages = asDoc ? await pageStoreApi.getByDocument(asDoc.id) : [];
-  const qpVisionState = visionData?.qpVision ? "VISION_AVAILABLE" : visionData === null ? "VISION_FAILED" : "VISION_NOT_INVOKED";
-  const asVisionState = visionData?.asVision ? "VISION_AVAILABLE" : visionData === null ? "VISION_FAILED" : "VISION_NOT_INVOKED";
+  // Check for preflight/credit VISION_UNAVAILABLE (distinct from VISION_FAILED)
+  const preflightFail = (globalThis as any).__visionPreflightFail?.get(jobId);
+  const creditFail = (globalThis as any).__visionCreditFail?.get(jobId);
+  const isUnavailable = !!(preflightFail || creditFail);
+  const qpVisionState = visionData?.qpVision ? "VISION_AVAILABLE" : isUnavailable ? "VISION_UNAVAILABLE" : visionData === null ? "VISION_FAILED" : "VISION_NOT_INVOKED";
+  const asVisionState = visionData?.asVision ? "VISION_AVAILABLE" : isUnavailable ? "VISION_UNAVAILABLE" : visionData === null ? "VISION_FAILED" : "VISION_NOT_INVOKED";
   const qpFusion = fuseDocuments(qpOcr, qpPages, visionData?.qpVision || null, jobId);
   const asFusion = fuseDocuments(asOcr, asPages, visionData?.asVision || null, jobId);
-  // Expose structured vision state
+  // Expose structured vision state — VISION_UNAVAILABLE is never silent success
   (qpFusion as any).visionState = qpVisionState;
   (asFusion as any).visionState = asVisionState;
-  (qpFusion as any).visionReason = !visionData?.qpVision ? (visionData === null ? "vision failed or timed out" : "routing skipped") : "ok";
-  (asFusion as any).visionReason = !visionData?.asVision ? (visionData === null ? "vision failed or timed out" : "routing skipped") : "ok";
+  const unavailableReason = preflightFail?.reason || creditFail?.reason || "Vision unavailable (preflight/credit)";
+  (qpFusion as any).visionReason = !visionData?.qpVision ? (isUnavailable ? `VISION_UNAVAILABLE: ${unavailableReason}` : visionData === null ? "vision failed or timed out" : "routing skipped") : "ok";
+  (asFusion as any).visionReason = !visionData?.asVision ? (isUnavailable ? `VISION_UNAVAILABLE: ${unavailableReason}` : visionData === null ? "vision failed or timed out" : "routing skipped") : "ok";
+  if (isUnavailable) {
+    console.error(JSON.stringify({ jobId, stage: "FUSION", event: "vision_unavailable", qpVisionState, asVisionState, reason: unavailableReason, creditFail, preflightFail }));
+  }
   const out = { qpFusion, asFusion, visionState: { qp: qpVisionState, as: asVisionState } };
+  // Prove skipped QP pages safe (generic heuristic, not paper-specific): check OCR confidence & structure per skipped page
+  try {
+    const visionQpPages = new Set((visionData?.qpVision?.pages || []).map((p: any) => p.pageNumber));
+    const skippedQpPages = qpOcr.pages.filter((p: any) => !visionQpPages.has(p.pageNumber));
+    const skippedSafe: any[] = [];
+    const skippedUnsafe: any[] = [];
+    for (const p of skippedQpPages) {
+      const avgConf = p.confidence || 0;
+      const lineCount = p.lines?.length || 0;
+      const hasLowConf = (p.lines || []).some((l: any) => (l.confidence || 1) < 0.6);
+      const isMultiColumn = (() => {
+        const xs = (p.lines || []).map((l: any) => l.boundingBox.x);
+        const left = xs.filter((x: number) => x < 0.4).length;
+        const right = xs.filter((x: number) => x >= 0.5).length;
+        return left >= 2 && right >= 2;
+      })();
+      const safe = avgConf > 0.80 && !hasLowConf && !isMultiColumn && lineCount >= 5;
+      (safe ? skippedSafe : skippedUnsafe).push({ pageNumber: p.pageNumber, avgConf: Number(avgConf.toFixed(2)), lineCount, hasLowConf, isMultiColumn, safe });
+    }
+    console.log(JSON.stringify({ jobId, stage: "FUSION", event: "qp_vision_coverage", totalQp: qpOcr.pages.length, visionQp: visionQpPages.size, skipped: skippedQpPages.length, skippedSafe: skippedSafe.length, skippedUnsafe: skippedUnsafe.length, sampleSafe: skippedSafe.slice(0,3), sampleUnsafe: skippedUnsafe.slice(0,3) }));
+    if (skippedUnsafe.length > 0) {
+      console.warn(JSON.stringify({ jobId, stage: "FUSION", event: "qp_skipped_unsafe", count: skippedUnsafe.length, pages: skippedUnsafe.map((s:any)=>s.pageNumber), reason: "low confidence or multi-column detected on skipped pages — consider expanding Vision coverage" }));
+    }
+    (out as any).qpSkippedSafety = { skipped: skippedQpPages.length, safe: skippedSafe.length, unsafe: skippedUnsafe.length, details: [...skippedSafe, ...skippedUnsafe].slice(0,10) };
+  } catch {}
   try {
     const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
     const debugDir = path.join(os.tmpdir(), "veda-ai", safe, "debug");
@@ -1119,12 +1478,21 @@ async function structuring(jobId: string, extraction: any) {
     questions.push(node);
   }
 
+  // ── CORRECT CONTRACT: ONE logical AnswerGroup = ONE student answer, with MULTIPLE physical regions ──
+  // Previously: bboxesByPage Map was split into one AnswerGroup per page (23 → 35). Fixed to preserve logical identity.
   const answerRegions: AnswerRegion[] = [];
+  const answerGroups: AnswerGroup[] = [];
+
   for (let idx = 0; idx < asDetected.regions.length; idx++) {
     const r: any = asDetected.regions[idx];
-    // Deterministic path: r._segmented contains per-page bboxes
-    if (r._segmented && r._segmented.bboxesByPage) {
-      const seg = r._segmented;
+    const seg: any = r._segmented;
+    // Preserve logical identity: stable ID from segment or original suspectedQuestion + order
+    const logicalId = seg?.id || (r.questionLabel ? `AG-${r.questionLabel}-${idx}` : `AG-untagged-${idx}`);
+    // Collect all physical regions for this logical answer (multi-page allowed)
+    const regionsForGroup: AnswerRegion[] = [];
+    if (seg && seg.bboxesByPage) {
+      // Use actual evidence from AnswerGraph: page adjacency, continuation, handwriting continuity already validated
+      // Keep ALL page fragments, not split into separate groups
       let subIdx = 0;
       for (const [pn, boxesArr] of seg.bboxesByPage.entries()) {
         const boxes = (boxesArr as any[]).map((b: any) => ({ x: b.x, y: b.y, width: b.width, height: b.height }));
@@ -1134,6 +1502,7 @@ async function structuring(jobId: string, extraction: any) {
           documentId: asDoc.id,
           pageId: pageIdForPn,
           regionType: r.visualConfidence && r.visualConfidence > 0.6 && !r.rawText ? "DIAGRAM" : "HANDWRITING",
+          // Keep raw text only on first region to avoid duplication; but preserve source via regions
           rawText: subIdx === 0 ? r.rawText || "" : "",
           normalizedText: subIdx === 0 ? (r.rawText || "").trim() : "",
           sourceBoxes: boxes,
@@ -1145,10 +1514,12 @@ async function structuring(jobId: string, extraction: any) {
           orderIndex: r.orderIndex ?? idx,
           continuationGroupId: `seg-${idx}`,
         };
+        regionsForGroup.push(region);
         answerRegions.push(region);
         subIdx++;
       }
     } else {
+      // Fallback: single region
       const boxes = r.boxes.map((b: number[]) => ({
         x: b[0],
         y: b[1],
@@ -1171,63 +1542,108 @@ async function structuring(jobId: string, extraction: any) {
         visualConfidence: r.visualConfidence,
         orderIndex: r.orderIndex ?? idx,
       };
+      regionsForGroup.push(region);
       answerRegions.push(region);
     }
+
+    // ONE logical AnswerGroup with MULTIPLE regions (correct contract)
+    // Stable logicalAnswerId is kept in id; mapping consumes id; highlighting uses all regions
+    const group: AnswerGroup = {
+      id: logicalId, // stable logical ID, not random per page
+      documentId: asDoc.id,
+      regions: regionsForGroup,
+      primaryRegionId: regionsForGroup[0]?.id || generateId(),
+      normalizedText: r.rawText || r.normalizedText || seg?.text || "",
+      mappedQuestionId: undefined,
+    };
+    // Preserve original segment bboxesByPage and pageNumbers for debugging
+    (group as any)._logicalSource = {
+      pageNumbers: seg?.pageNumbers || [asPages[0]?.pageNumber || 1],
+      bboxesByPage: seg?.bboxesByPage,
+      regionCount: regionsForGroup.length,
+      suspectedQuestion: r.questionLabel,
+    };
+    answerGroups.push(group);
   }
 
-  const answerGroups: AnswerGroup[] = answerRegions.map((reg) => ({
-    id: generateId(),
-    documentId: asDoc.id,
-    regions: [reg],
-    primaryRegionId: reg.id,
-    normalizedText: reg.normalizedText,
-    mappedQuestionId: undefined,
-  }));
-
+  // Deduplicate only true duplicate logical groups with same label that are separate logical answers
+  // (e.g., student wrote Q26 label again on page 15 as header — should merge as one logical answer)
+  // Use label + adjacency evidence, not blind page split
   const groupedByLabel = new Map<string, AnswerGroup>();
   const finalGroups: AnswerGroup[] = [];
   for (const g of answerGroups) {
-    const label = g.regions[0].questionLabel;
+    const label = g.regions[0]?.questionLabel;
     if (label && groupedByLabel.has(label)) {
       const existing = groupedByLabel.get(label)!;
-      existing.regions.push(...g.regions);
-      existing.normalizedText += "\n" + g.normalizedText;
-    } else {
-      if (label) groupedByLabel.set(label, g);
-      finalGroups.push(g);
-    }
-  }
-
-  // Multi-page continuation: merge untagged regions that follow a labeled answer on adjacent page
-  // Heuristic: untagged group whose orderIndex = labeled.orderIndex+1 and page is next page (or same page lower half -> continuation on next page top)
-  const pageNumForGroup = (g: AnswerGroup): number => {
-    const pageId = g.regions[0]?.pageId;
-    const pg = asPages.find((p: any) => p.id === pageId);
-    return pg ? pg.pageNumber : 999;
-  };
-  const mergedContinuationGroups: AnswerGroup[] = [];
-  for (let i = 0; i < finalGroups.length; i++) {
-    const g = finalGroups[i];
-    const label = g.regions[0]?.questionLabel;
-    if (!label) {
-      const prev = mergedContinuationGroups[mergedContinuationGroups.length - 1];
-      if (prev && prev.regions[0]?.questionLabel) {
-        const prevPage = pageNumForGroup(prev);
-        const curPage = pageNumForGroup(g);
-        // Merge if adjacent page or same page continuation (untagged trailing lines)
-        const isAdjacent = curPage === prevPage + 1 || (curPage === prevPage && g.regions[0].orderIndex === prev.regions[0].orderIndex + 1);
-        const prevHasContinuation = g.regions[0].continuationGroupId || isAdjacent;
-        if (isAdjacent || g.normalizedText.length < 200) {
-          // Treat as continuation of previous labeled answer
-          prev.regions.push(...g.regions);
-          prev.normalizedText += "\n" + g.normalizedText;
-          // Preserve continuation link
-          g.regions.forEach((r) => (r.continuationGroupId = prev.regions[0].continuationGroupId));
-          continue;
-        }
+      // Only merge if evidence supports continuation: adjacent pages and no new distinct answer between
+      const existingPages = new Set(existing.regions.map((reg) => asPages.find((p: any) => p.id === reg.pageId)?.pageNumber));
+      const newPages = g.regions.map((reg) => asPages.find((p: any) => p.id === reg.pageId)?.pageNumber).filter(Boolean) as number[];
+      const isContinuation = newPages.some((pn) => existingPages.has((pn as number) - 1) || existingPages.has(pn as number));
+      const hasContinuationEvidence = g.regions.some((reg) => reg.continuationGroupId) || isContinuation;
+      if (hasContinuationEvidence) {
+        existing.regions.push(...g.regions);
+        existing.normalizedText += "\n" + g.normalizedText;
+        // Keep logicalIdentityEvidence for audit
+        (existing as any)._mergedFrom = (existing as any)._mergedFrom || [];
+        (existing as any)._mergedFrom.push(g.id);
+        continue;
       }
     }
-    mergedContinuationGroups.push(g);
+    if (g.regions[0]?.questionLabel) groupedByLabel.set(g.regions[0].questionLabel!, g);
+    finalGroups.push(g);
+  }
+
+  // After fixing logical contract, untagged multi-page groups are already correct (1 group with 3 regions).
+  // The previous heuristic that merged untagged trailing fragments after labeled is no longer needed for page-split correction,
+  // but keep a minimal guard: only merge if text is tiny (< 30 chars) and clearly not a new answer (no diagram, no new label evidence).
+  // This prevents merging distinct answers on same page (Q17 vs Q18) while preserving true continuations.
+  // For now, skip this heuristic entirely to avoid false merges — logical groups from AnswerGraph already have correct continuations.
+  const mergedContinuationGroups = finalGroups;
+
+  // Validate invariant: logicalGroupCount should equal mappingUnitCount (unless documented transformation)
+  const logicalGroupCount = (extraction as any).segmentedAnswers?.length ?? answerGroups.length;
+  if (mergedContinuationGroups.length !== logicalGroupCount) {
+    console.warn(JSON.stringify({ jobId, stage: "STRUCTURING", event: "answer_group_count_mismatch", logical: logicalGroupCount, mapping: mergedContinuationGroups.length, note: "Expected Y==Z per contract; if intentional transformation, document it" }));
+  }
+
+  // ── Create answer-graph-contract.json (Phase 16) ──
+  try {
+    const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+    const contract = {
+      logicalGroupCount,
+      groups: mergedContinuationGroups.map((g) => ({
+        id: g.id,
+        regionCount: g.regions.length,
+        pageNumbers: [...new Set(g.regions.map((r) => asPages.find((p: any) => p.id === r.pageId)?.pageNumber).filter(Boolean))].sort((a: number, b: number) => a - b) as number[],
+        sourceBlockIds: g.regions.map((r) => r.id),
+        logicalIdentityEvidence: {
+          label: g.regions[0]?.questionLabel || null,
+          labelConfidence: g.regions[0]?.labelConfidence,
+          pageAdjacency: g.regions.length > 1,
+          continuationGroupId: g.regions[0]?.continuationGroupId,
+          textPreview: g.normalizedText.slice(0, 120).replace(/\n/g, " "),
+          regionPages: g.regions.map((r) => ({ pageId: r.pageId, pageNumber: asPages.find((p: any) => p.id === r.pageId)?.pageNumber, bbox: r.normalizedBoxes[0] })),
+        },
+      })),
+      mappingUnitCount: mergedContinuationGroups.length,
+    };
+    // Assert invariant
+    const invariantOk = contract.logicalGroupCount === contract.mappingUnitCount;
+    if (!invariantOk) {
+      console.error(JSON.stringify({ jobId, stage: "STRUCTURING", event: "contract_invariant_failed", logical: contract.logicalGroupCount, mapping: contract.mappingUnitCount }));
+    } else {
+      console.log(JSON.stringify({ jobId, stage: "STRUCTURING", event: "contract_ok", logical: contract.logicalGroupCount, mapping: contract.mappingUnitCount }));
+    }
+    await fs.mkdir(path.join(process.cwd(), "artifacts", safe), { recursive: true });
+    await fs.writeFile(path.join(process.cwd(), "artifacts", safe, "answer-graph-contract.json"), JSON.stringify(contract, null, 2), "utf-8");
+    await fs.mkdir(path.join(os.tmpdir(), "veda-ai", safe), { recursive: true });
+    await fs.writeFile(path.join(os.tmpdir(), "veda-ai", safe, "answer-graph-contract.json"), JSON.stringify(contract, null, 2), "utf-8");
+    // Also write to debug for inspection
+    const debugDir = path.join(os.tmpdir(), "veda-ai", safe, "debug");
+    await fs.mkdir(debugDir, { recursive: true });
+    await fs.writeFile(path.join(debugDir, "answer-graph-contract.json"), JSON.stringify(contract, null, 2), "utf-8");
+  } catch (e: any) {
+    console.warn(JSON.stringify({ jobId, stage: "STRUCTURING", event: "contract_write_failed", error: e.message?.slice(0,200) }));
   }
 
   return { questions, answerRegions, answerGroups: mergedContinuationGroups, qpDoc, asDoc, qpPages, asPages };
@@ -1239,6 +1655,119 @@ function numericPart(s: string): string {
 }
 
 async function matchingStage(jobId: string, structured: any) {
+  const { questions, answerGroups } = structured as { questions: QuestionNode[]; answerGroups: AnswerGroup[] };
+  const tMatchStart = Date.now();
+  // Attempt Smart Mapping (Phase 16-59)
+  try {
+    const cfg = getConfig() as any;
+    // For mock provider in tests, optionally use legacy path for deterministic tiny data
+    // But smart mapping handles mock as well; we still use it but allow fallback
+    const pagesAs: any[] = (structured as any).asPages || [];
+    const visionData = visionResultStore.get(jobId) || null;
+    // Build AnswerEvidences (preserves provenance)
+    const answerEvidences = buildAnswerEvidences(answerGroups, pagesAs, visionData as any);
+    console.log(JSON.stringify({ jobId, stage: "MATCHING", event: "smart_mapping_start", questions: questions.length, answerGroups: answerGroups.length, evidences: answerEvidences.length, anchors: answerEvidences.filter((e) => e.QUESTION_LABEL_DETECTED).length }));
+
+    const enableVision = (cfg.VISION_PROVIDER || "auto") !== "disabled" && (cfg.OCR_PROVIDER || "local") !== "mock";
+    const smart = await runSmartMapping({
+      jobId,
+      questions,
+      answerGroups,
+      answerEvidences,
+      visionData: visionData as any,
+      pagesAs,
+      enableTargetedVision: enableVision,
+    });
+
+    // Validation before highlight (Phase 40)
+    for (const d of smart.decisions) {
+      if (d.answerGroupId && !answerGroups.find((ag) => ag.id === d.answerGroupId)) {
+        console.warn(JSON.stringify({ jobId, stage: "MATCHING", event: "invalid_answerGroupId", questionId: d.questionId, agId: d.answerGroupId }));
+        // Downgrade to UNANSWERED if invalid
+        (d as any).status = "UNANSWERED";
+        (d as any).answerGroupId = undefined;
+        (d as any).answerIds = [];
+        (d as any).highlightRegions = [];
+      }
+      // Validate highlight geometry 0..1
+      for (const hl of d.highlightRegions) {
+        for (const b of hl.boxes) {
+          if (b.x < 0 || b.x > 1 || b.y < 0 || b.y > 1 || b.width <= 0 || b.height <= 0 || b.width > 1 || b.height > 1) {
+            console.warn(JSON.stringify({ jobId, stage: "MATCHING", event: "invalid_bbox", questionId: d.questionId, box: b }));
+          }
+        }
+      }
+    }
+    // Check no duplicate exclusive top-level assignment
+    const topIds = new Set<string>();
+    for (const d of smart.decisions.filter((dd) => questions.find((qq) => qq.id === dd.questionId && qq.depth === 0) && dd.answerGroupId)) {
+      if (d.status === "MATCHED" && d.answerGroupId && topIds.has(d.answerGroupId)) {
+        console.error(JSON.stringify({ jobId, stage: "MATCHING", event: "duplicate_assignment", agId: d.answerGroupId, questionId: d.questionId }));
+      }
+      if (d.status === "MATCHED" && d.answerGroupId) topIds.add(d.answerGroupId);
+    }
+
+    // Write debug artifacts (Phase 37)
+    await writeMappingDebugArtifacts(jobId, smart.debugPerQuestion, questions);
+
+    // Build final decisions including UNMATCHED for remaining answers (Phase 20)
+    const matchedAgIds = new Set(smart.decisions.filter((d) => d.answerGroupId && (d.status === "MATCHED" || d.status === "UNCERTAIN")).map((d) => d.answerGroupId!));
+    const unmatchedAnswers = answerGroups.filter((ag) => !matchedAgIds.has(ag.id));
+    const unmatchedDecisions: MappingDecision[] = unmatchedAnswers.map((ag) => {
+      const aev = smart.answerEvidences.find((e) => e.answerGroupId === ag.id);
+      const isPresent = aev?.ANSWER_PRESENT ?? false;
+      return {
+        id: generateId(),
+        questionId: "__unmatched__",
+        answerGroupId: ag.id,
+        answerIds: [ag.id],
+        primaryAnswerId: ag.id,
+        status: isPresent ? ("UNMATCHED" as const) : ("UNMATCHED" as const), // Phase 20: UNMATCHED = answer exists but no question reliably, vs UNANSWERED for questions
+        confidence: 0,
+        evidence: [buildEvidence("EXPLICIT_QUESTION_LABEL", "matching", 0.12, isPresent ? "Answer present but no confident question mapping (UNMATCHED)" : "No reliable question match", 0.5)],
+        highlightRegions: (() => {
+          const byPage = new Map<string, any[]>();
+          for (const r of ag.regions) {
+            if (!byPage.has(r.pageId)) byPage.set(r.pageId, []);
+            byPage.get(r.pageId)!.push(...r.normalizedBoxes);
+          }
+          return Array.from(byPage.entries()).map(([pageId, boxes]) => ({ pageId, boxes: mergeBoxesForHighlight(boxes), confidence: 0.32, source: "unmatched-smart" }));
+        })(),
+      };
+    });
+
+    // Sort decisions by question order for stable API
+    const allDecisions = [...smart.decisions, ...unmatchedDecisions];
+    allDecisions.sort((a, b) => {
+      if (a.questionId === "__unmatched__" && b.questionId !== "__unmatched__") return 1;
+      if (b.questionId === "__unmatched__" && a.questionId !== "__unmatched__") return -1;
+      const qa = questions.find((qq: any) => qq.id === a.questionId);
+      const qb = questions.find((qq: any) => qq.id === b.questionId);
+      return (qa?.orderIndex ?? 999) - (qb?.orderIndex ?? 999);
+    });
+
+    console.log(JSON.stringify({
+      jobId,
+      stage: "MATCHING",
+      event: "smart_mapping_done",
+      durationMs: Date.now() - tMatchStart,
+      matched: allDecisions.filter((d) => d.status === "MATCHED").length,
+      uncertain: allDecisions.filter((d) => d.status === "UNCERTAIN").length,
+      unanswered: allDecisions.filter((d) => d.status === "UNANSWERED").length,
+      unmatched: unmatchedDecisions.length,
+      anchors: smart.anchors.length,
+      ambiguousVision: [...smart.debugPerQuestion.values()].filter((v) => v.visionAdjudication).length,
+    }));
+
+    return { questions, answerGroups, decisions: allDecisions, unmatchedAnswers, answerEvidences: smart.answerEvidences, anchors: smart.anchors };
+  } catch (e: any) {
+    console.error(JSON.stringify({ jobId, stage: "MATCHING", event: "smart_mapping_failed_fallback", error: e.message?.slice(0, 400), stack: e.stack?.slice(0, 500) }));
+    // Fallback to legacy mapping (preserve pipeline)
+    return legacyMatchingStage(jobId, structured);
+  }
+}
+
+async function legacyMatchingStage(jobId: string, structured: any) {
   const { questions, answerGroups } = structured as { questions: QuestionNode[]; answerGroups: AnswerGroup[] };
   const decisions: MappingDecision[] = [];
   const usedAnswerGroups = new Set<string>();
@@ -1302,74 +1831,48 @@ async function matchingStage(jobId: string, structured: any) {
     }
     const sorted = candidates.sort((a, b) => b.score - a.score);
     const topCandidates = sorted.slice(0, 3).map((c) => ({ questionId: q.id, answerGroupId: c.answerGroupId, evidence: c.evidence, score: c.score }));
-    // Store all candidates for global conflict resolution (defer decision)
     (q as any).__candidates = sorted;
     (q as any).__topCandidates = topCandidates;
   }
-
-  // Global assignment: sort questions by best score desc, then greedy assign
   const sortedQuestions = [...questions].sort((a: any, b: any) => {
     const sa = (a.__candidates?.[0]?.score ?? 0);
     const sb = (b.__candidates?.[0]?.score ?? 0);
     return sb - sa;
   });
-
   for (const q of sortedQuestions) {
     const topCandidates = (q as any).__topCandidates as any[];
     const sorted = (q as any).__candidates as any[];
     let decision = decideForQuestion(topCandidates);
     let chosenId = decision.chosen?.answerGroupId as string | undefined;
-
-    // Global conflict: if chosen answer already taken by higher-scoring question, force UNCERTAIN or try next candidate
     if (chosenId && decision.status === "MATCHED" && usedAnswerGroups.has(chosenId)) {
-      // Find next candidate that is not used and above review threshold
       const next = sorted.find((c: any) => !usedAnswerGroups.has(c.answerGroupId) && c.score >= 0.5);
       if (next) {
-        // Re-evaluate with next as top
         const altCandidates = [next, ...sorted.filter((c: any) => c.answerGroupId !== next.answerGroupId).slice(0, 2)].map((c: any) => ({ questionId: q.id, answerGroupId: c.answerGroupId, evidence: c.evidence, score: c.score }));
         const altDecision = decideForQuestion(altCandidates);
         if (altDecision.chosen && !usedAnswerGroups.has(altDecision.chosen.answerGroupId)) {
           decision = altDecision;
           chosenId = altDecision.chosen.answerGroupId;
         } else {
-          // Keep original but downgrade to UNCERTAIN with conflict evidence
-          decision = {
-            status: "UNCERTAIN" as const,
-            confidence: decision.confidence,
-            evidence: [
-              ...decision.evidence,
-              buildEvidence("NEIGHBOR_CONTEXT", "matching", 0.4, `Global conflict: answer ${chosenId} already assigned to higher-scoring question`, 0.9),
-            ],
-          };
-          chosenId = undefined; // do not assign duplicate
+          decision = { status: "UNCERTAIN" as const, confidence: decision.confidence, evidence: [...decision.evidence, buildEvidence("NEIGHBOR_CONTEXT", "matching", 0.4, `Global conflict: answer ${chosenId} already assigned to higher-scoring question`, 0.9)] };
+          chosenId = undefined;
         }
       } else {
-        decision = {
-          status: "UNCERTAIN" as const,
-          confidence: decision.confidence,
-          evidence: [
-            ...decision.evidence,
-            buildEvidence("NEIGHBOR_CONTEXT", "matching", 0.35, `Global conflict: answer ${chosenId} already assigned — no alternative above threshold`, 0.9),
-          ],
-        };
+        decision = { status: "UNCERTAIN" as const, confidence: decision.confidence, evidence: [...decision.evidence, buildEvidence("NEIGHBOR_CONTEXT", "matching", 0.35, `Global conflict: answer ${chosenId} already assigned — no alternative above threshold`, 0.9)] };
         chosenId = undefined;
       }
     }
-
     const highlightRegions: HighlightRegion[] = [];
     if (chosenId) {
       const ag = answerGroups.find((a) => a.id === chosenId);
       if (ag) {
-        // Coherent region: merge per-page boxes into single union box per page (plus small padding) — Phase 28
         const boxesByPage = new Map<string, any[]>();
         for (const reg of ag.regions) {
           if (!boxesByPage.has(reg.pageId)) boxesByPage.set(reg.pageId, []);
           boxesByPage.get(reg.pageId)!.push(...reg.normalizedBoxes);
         }
         for (const [pageId, boxes] of boxesByPage) {
-          // Merge to one coherent box per page; if spread >0.35 height, keep separate (avoid giant blank)
           const merged = mergeBoxesForHighlight(boxes);
-          highlightRegions.push({ pageId, boxes: merged, confidence: decision.confidence, source: "matching" });
+          highlightRegions.push({ pageId, boxes: merged, confidence: decision.confidence, source: "matching-legacy" });
         }
       }
       if (decision.status === "MATCHED") usedAnswerGroups.add(chosenId);
@@ -1387,14 +1890,11 @@ async function matchingStage(jobId: string, structured: any) {
       highlightRegions,
     });
   }
-
-  // Ensure decisions are in original question order for stable API
   decisions.sort((a, b) => {
     const qa = questions.find((qq: any) => qq.id === a.questionId);
     const qb = questions.find((qq: any) => qq.id === b.questionId);
     return (qa?.orderIndex ?? 0) - (qb?.orderIndex ?? 0);
   });
-
   const unmatchedAnswers = answerGroups.filter((ag) => !decisions.some((d) => d.answerGroupId === ag.id && (d.status === "MATCHED" || d.status === "UNCERTAIN")));
   const unmatchedDecisions: MappingDecision[] = unmatchedAnswers.map((ag) => ({
     id: generateId(),

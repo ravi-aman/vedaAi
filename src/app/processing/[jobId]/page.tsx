@@ -56,6 +56,9 @@ export default function ProcessingPage() {
           throw new Error((data as any).error || `Failed to fetch (${res.status})`);
         }
         if (cancelled) return;
+        if (!data.job) {
+          throw new Error("Job data unavailable — server may have restarted. Please re-upload.");
+        }
         setJob(data.job);
         if (data.job.status === "COMPLETED") {
           terminal = true;

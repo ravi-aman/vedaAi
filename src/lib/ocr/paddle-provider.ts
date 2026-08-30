@@ -417,12 +417,21 @@ export class PaddleOcrProvider {
     return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
   }
 
+  private static activeWorkers = new Map<string, Set<ReturnType<typeof spawn>>>();
+  static cancelWorkers(jobId: string) {
+    const set = PaddleOcrProvider.activeWorkers.get(jobId);
+    if (set) for (const c of set) try { (c as any).kill("SIGTERM"); } catch {}
+  }
   private spawnWorker(pythonPath: string, args: string[], timeoutMs: number, jobId: string): Promise<{ stdout: string; stderr: string; summary: any }> {
     return new Promise((resolve, reject) => {
       const child = spawn(pythonPath, args, {
         stdio: ["ignore", "pipe", "pipe"],
         env: { ...process.env, FLAGS_use_pir_api: "0", PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: "True" },
       });
+      // Track for cancellation (bounded backpressure)
+      if (!PaddleOcrProvider.activeWorkers.has(jobId)) PaddleOcrProvider.activeWorkers.set(jobId, new Set());
+      PaddleOcrProvider.activeWorkers.get(jobId)!.add(child as any);
+      const cleanup = () => { try { PaddleOcrProvider.activeWorkers.get(jobId)?.delete(child as any); } catch {} };
 
       let stdout = "";
       let stderr = "";
@@ -458,11 +467,13 @@ export class PaddleOcrProvider {
 
       child.on("error", (err) => {
         clearTimeout(timer);
+        cleanup();
         reject(new OcrError(OcrErrorCodes.OPERATION_FAILED, `Failed to spawn PaddleOCR worker: ${err.message}`, err, false));
       });
 
       child.on("close", (code, signal) => {
         clearTimeout(timer);
+        cleanup();
         if (timedOut) return;
         if (code === 0) {
           try {

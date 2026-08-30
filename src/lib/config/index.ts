@@ -64,7 +64,7 @@ const envSchema = z.object({
   AWS_SNS_TOPIC_ARN: z.string().optional(),
   AWS_SNS_ROLE_ARN: z.string().optional(),
   AWS_SQS_QUEUE_URL: z.string().optional(),
-  OCR_OPERATION_TIMEOUT_MS: z.coerce.number().default(300000),
+  OCR_OPERATION_TIMEOUT_MS: z.coerce.number().default(600000),
   OCR_POLL_INTERVAL_MS: z.coerce.number().default(5000),
   OCR_MAX_RETRIES: z.coerce.number().default(3),
   // Vision — parallel to Textract (evidence-only, grounded to Textract geometry)
@@ -85,8 +85,12 @@ const envSchema = z.object({
     return v;
   }).pipe(z.string().url().or(z.literal("")).transform((v) => v || OPENROUTER_DEFAULT_BASE)),
   VISION_ENABLED: z.coerce.boolean().default(true),
-  VISION_MAX_PAGES: z.coerce.number().int().min(1).max(20).default(1),
+  // Document-aware routing: not universal 3-page limit — default 50 allows full QP Vision when needed; answerSheet always all pages
+  VISION_MAX_PAGES: z.coerce.number().int().min(1).max(50).default(50),
   VISION_TIMEOUT_MS: z.coerce.number().default(90000),
+  // Targeted adjudication budget (Phase 50)
+  MAPPING_VISION_MAX_ADJUDICATIONS: z.coerce.number().int().min(0).max(20).default(6),
+  MAPPING_VISION_TIMEOUT_MS: z.coerce.number().default(30000),
   // Supabase — supports both new publishable (sb_publishable_...) and legacy anon (eyJ...) keys
   NEXT_PUBLIC_SUPABASE_URL: z.string().url().optional().or(z.literal("")),
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: z.string().optional(),

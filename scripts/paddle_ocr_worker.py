@@ -37,24 +37,61 @@ def main():
     log(f"imported paddleocr in {(time.time()-t0)*1000:.0f}ms mem {mem_before:.1f}MB")
 
     t1 = time.time()
-    # Speed-first: use mobile detection where available, English rec
-    ocr_kwargs = dict(
-        lang=args.lang,
-        ocr_version=args.ocr_version,
-        use_doc_orientation_classify=False,
-        use_doc_unwarping=False,
-        use_textline_orientation=False,
-    )
-    # Try to force mobile detection for speed (PP-OCRv5_mobile_det) if available
-    if args.ocr_version == "PP-OCRv5":
+    # ── File-locked model provisioning (Fixes QP OCR || AS OCR race) ──
+    # PaddleX model resolver is not atomic: concurrent workers race on .paddlex/official_models extraction.
+    # Use directory-based lock (atomic mkdir) to serialize PaddleOCR initialization only; inference remains parallel.
+    lock_dir = Path.home() / ".paddlex" / ".veda-init.lock"
+    lock_acquired = False
+    lock_attempts = 0
+    while not lock_acquired and lock_attempts < 120:
         try:
-            ocr_kwargs["text_detection_model_name"] = "PP-OCRv5_mobile_det"
-            ocr_kwargs["text_recognition_model_name"] = "en_PP-OCRv5_mobile_rec"
-        except Exception:
-            pass
-    ocr = PaddleOCR(**ocr_kwargs)
-    t2 = time.time()
-    log(f"PaddleOCR initialized in {(t2-t1)*1000:.0f}ms mem {proc.memory_info().rss/1024/1024:.1f}MB")
+            lock_dir.mkdir(parents=False, exist_ok=False)
+            lock_acquired = True
+        except FileExistsError:
+            time.sleep(0.5)
+            lock_attempts += 1
+            if lock_attempts % 10 == 0:
+                log(f"waiting for paddle init lock held by other worker... {lock_attempts*0.5:.0f}s")
+    if not lock_acquired:
+        log(f"WARNING: could not acquire paddle init lock after 60s, proceeding without lock (may race)")
+    try:
+        # Speed-first: use mobile detection where available, English rec
+        ocr_kwargs = dict(
+            lang=args.lang,
+            ocr_version=args.ocr_version,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+        )
+        # Use mobile models for speed if available, else fallback to server — verified existence
+        if args.ocr_version == "PP-OCRv5":
+            try:
+                import pathlib
+                det_path = pathlib.Path.home() / ".paddlex" / "official_models" / "PP-OCRv5_mobile_det" / "inference.yml"
+                rec_path = pathlib.Path.home() / ".paddlex" / "official_models" / "en_PP-OCRv5_mobile_rec" / "inference.yml"
+                det_ok = det_path.exists() and det_path.stat().st_size > 100
+                rec_ok = rec_path.exists() and rec_path.stat().st_size > 100
+                if det_ok and rec_ok:
+                    ocr_kwargs["text_detection_model_name"] = "PP-OCRv5_mobile_det"
+                    ocr_kwargs["text_recognition_model_name"] = "en_PP-OCRv5_mobile_rec"
+                    log(f"using mobile models: det={det_ok} rec={rec_ok}")
+                elif rec_ok:
+                    ocr_kwargs["text_recognition_model_name"] = "en_PP-OCRv5_mobile_rec"
+                    log(f"using mobile rec only: det={det_ok} rec={rec_ok}")
+                else:
+                    log(f"mobile models not ready (det={det_ok} rec={rec_ok}), using PaddleOCR defaults (will auto-download)")
+                    # Do not force server — let PaddleOCR choose correct default and download
+            except Exception as e:
+                log(f"mobile model check failed: {e}, using PaddleOCR defaults")
+        ocr = PaddleOCR(**ocr_kwargs)
+        t2 = time.time()
+        log(f"PaddleOCR initialized in {(t2-t1)*1000:.0f}ms mem {proc.memory_info().rss/1024/1024:.1f}MB lock_wait={lock_attempts*0.5:.1f}s")
+    finally:
+        if lock_acquired:
+            try:
+                lock_dir.rmdir()
+            except Exception:
+                pass
 
     # Load manifest
     manifest_path = Path(args.manifest)
