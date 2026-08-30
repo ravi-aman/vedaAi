@@ -38,11 +38,13 @@ function isVercelProduction(): boolean {
 }
 function assertDurableInProduction(): void {
   if (!isDurableConfigured()) {
+    if (isVercelProduction()) {
+      throw new Error("CONFIGURATION_ERROR: Durable Supabase not configured — NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY required in production (VERCEL). Refusing silent fallback to InMemory/tmp. Set SUPABASE_SERVICE_ROLE_KEY in Vercel dashboard.");
+    }
+    // For remote backend locally without service key, allow tmp fallback but warn (for local testing only)
     const isRemote = (()=>{ try { const { isRemoteBackend } = require("@/lib/config"); return isRemoteBackend(); } catch { return false; }})();
-    if (isRemote || isVercelProduction()) {
-      // Strict: production with remote or Vercel must be durable, not silent fallback
-      // We throw only on write attempts, not on reads, to allow error to surface as 500 with clear code
-      throw new Error("CONFIGURATION_ERROR: Durable Supabase not configured — NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY required in production (PROCESSING_BACKEND=remote or VERCEL). Refusing silent fallback to InMemory/tmp.");
+    if (isRemote) {
+      console.warn("[durable] PROCESSING_BACKEND=remote but Supabase not configured — using tmp fallback for local test only. Production Vercel will throw.");
     }
   }
 }
@@ -144,7 +146,7 @@ export class DurableJobStore implements JobStore {
     const dbOk = await supabaseDbUpsert(job);
     if (!dbOk) {
       const ok = await supabaseUploadJson(jobStoragePath(job.id), job);
-      if (!ok && (isVercelProduction() || (()=>{ try { return require("@/lib/config").isRemoteBackend(); } catch { return false; }})())) {
+      if (!ok && isVercelProduction()) {
         throw new Error("CONFIGURATION_ERROR: Failed to persist job to durable Supabase Storage — bucket assessment-inputs missing or service key invalid. Check Supabase.");
       }
     }
@@ -178,8 +180,8 @@ export class DurableJobStore implements JobStore {
     const dbOk = await supabaseDbUpsert(updated);
     if (!dbOk) {
       const ok = await supabaseUploadJson(jobStoragePath(jobId), updated);
-      if (!ok && (isVercelProduction() || (()=>{ try { return require("@/lib/config").isRemoteBackend(); } catch { return false; }})())) {
-        console.warn(`[durable] update persisted only to tmp, supabase failed for ${jobId} — will be non-durable`);
+      if (!ok && isVercelProduction()) {
+        console.warn(`[durable] update persisted only to tmp, supabase failed for ${jobId} — will be non-durable on Vercel`);
       }
     }
     return updated;
