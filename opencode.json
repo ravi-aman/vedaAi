@@ -7,7 +7,23 @@
       "apiKey": "{env:OPENCODE_API_KEY}"
     }
   },
-  "mcp": {},
+  "mcp": {
+    "github": {
+      "type": "remote",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "enabled": true
+    },
+    "openai": {
+      "type": "remote",
+      "url": "https://opencode.ai/zen/v1/mcp/",
+      "enabled": true
+    },
+    "local": {
+      "type": "remote",
+      "url": "",
+      "enabled": true
+    }
+  },
   "lsp": true,
   "permission": {
     "read": "allow",
