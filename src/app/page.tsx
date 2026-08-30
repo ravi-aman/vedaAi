@@ -56,37 +56,62 @@ export default function UploadPage() {
     try { localStorage.setItem("vedaJobId", id); } catch {}
     try { document.cookie = `vedaJobId=${id}; path=/; max-age=86400; SameSite=Lax`; } catch {}
   };
+  const clearStoredJobId = () => {
+    (window as any).__vedaJobId = null;
+    try { localStorage.removeItem("vedaJobId"); } catch {}
+    try { document.cookie = `vedaJobId=; path=/; max-age=0`; } catch {}
+  };
 
   const uploadFile = async (f: File, kind: "questionPaper" | "answerSheet", setter: (s: FileState) => void) => {
     setter({ file: f, name: f.name, size: f.size, uploading: true });
     setJobError(null);
-    try {
-      let jobId = getStoredJobId();
-      if (!jobId) {
-        const res = await fetch("/api/jobs", { method: "POST" });
-        if (!res.ok) throw new Error("Failed to create job");
-        const data = await res.json();
-        jobId = data.jobId;
-        setStoredJobId(jobId);
-      }
+    const attemptUpload = async (jobId: string): Promise<any> => {
       const form = new FormData();
       form.append("file", f);
       form.append("kind", kind);
       const res = await fetch(`/api/jobs/${jobId}/upload`, { method: "POST", body: form });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Upload failed");
-      setter({
-        file: f,
-        name: f.name,
-        size: f.size,
-        pageCount: data.pageCount,
-        fileId: data.fileId,
-        documentId: data.documentId,
-        uploading: false,
-      });
+      if (!res.ok) {
+        const err: any = new Error(data.error || "Upload failed");
+        err.code = data.code;
+        err.status = res.status;
+        throw err;
+      }
+      return data;
+    };
+    try {
+      let jobId = getStoredJobId();
+      if (!jobId) {
+        const res = await fetch("/api/jobs", { method: "POST" });
+        const j: any = await res.json().catch(()=>({}));
+        if (!res.ok) throw new Error(j.error || "Failed to create job");
+        jobId = j.jobId;
+        setStoredJobId(jobId);
+      }
+      try {
+        const data = await attemptUpload(jobId);
+        setter({ file: f, name: f.name, size: f.size, pageCount: data.pageCount, fileId: data.fileId, documentId: data.documentId, uploading: false });
+      } catch (e: any) {
+        // Old jobId from before durable migration or Vercel cold start -> 404 JOB_NOT_FOUND -> auto-recover with fresh job (once)
+        if (e.code === "JOB_NOT_FOUND" && e.status === 404) {
+          clearStoredJobId();
+          const res = await fetch("/api/jobs", { method: "POST" });
+          const j: any = await res.json().catch(()=>({}));
+          if (!res.ok) throw new Error(j.error || "Failed to create job");
+          const newId = j.jobId;
+          setStoredJobId(newId);
+          const data = await attemptUpload(newId);
+          setter({ file: f, name: f.name, size: f.size, pageCount: data.pageCount, fileId: data.fileId, documentId: data.documentId, uploading: false });
+          return;
+        }
+        throw e;
+      }
     } catch (e: any) {
-      setter({ file: f, name: f.name, size: f.size, error: e.message, uploading: false });
-      setJobError(e.message);
+      const msg = e.code === "CONFIGURATION_ERROR" || String(e.message).includes("CONFIGURATION_ERROR")
+        ? "Server not configured — set SUPABASE_SERVICE_ROLE_KEY in Vercel and redeploy"
+        : e.message;
+      setter({ file: f, name: f.name, size: f.size, error: msg, uploading: false });
+      setJobError(msg);
     }
   };
 
@@ -109,8 +134,17 @@ export default function UploadPage() {
     }
     try {
       const res = await fetch(`/api/jobs/${jobId}/start`, { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to start");
+      const data: any = await res.json().catch(()=>({}));
+      if (!res.ok) {
+        if (data.code === "JOB_NOT_FOUND") {
+          clearStoredJobId();
+          throw new Error("Job expired — please re-upload both files");
+        }
+        if (data.code === "CONFIGURATION_ERROR" || String(data.error).includes("CONFIGURATION_ERROR")) {
+          throw new Error("Server not configured — set SUPABASE_SERVICE_ROLE_KEY in Vercel");
+        }
+        throw new Error(data.error || "Failed to start");
+      }
       router.push(`/processing/${jobId}`);
     } catch (e: any) {
       setJobError(e.message);
