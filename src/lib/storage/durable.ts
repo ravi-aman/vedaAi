@@ -164,15 +164,16 @@ export class DurableJobStore implements JobStore {
   }
 
   async get(jobId: string): Promise<ProcessingJob | null> {
+    // Always try durable first for Vercel cross-instance freshness; mem is per-instance and stale after other instance updates
+    if (isDurableConfigured()) {
+      const db = await supabaseDbGet(jobId);
+      if (db) { this.mem.set(jobId, db); return db; }
+      const stored = await supabaseDownloadJson<ProcessingJob>(jobStoragePath(jobId));
+      if (stored) { this.mem.set(jobId, stored); return stored; }
+    }
     const mem = this.mem.get(jobId);
     if (mem) return mem;
-    // Try DB first
-    const db = await supabaseDbGet(jobId);
-    if (db) { this.mem.set(jobId, db); return db; }
-    // Try storage
-    const stored = await supabaseDownloadJson<ProcessingJob>(jobStoragePath(jobId));
-    if (stored) { this.mem.set(jobId, stored); return stored; }
-    // Fallback local tmp
+    // Fallback local tmp (for local dev without Supabase)
     const local = await persistRead<ProcessingJob>(jobFile(jobId));
     if (local) { this.mem.set(jobId, local); return local; }
     return null;
