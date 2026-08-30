@@ -5,14 +5,14 @@ import { AppError, ErrorCodes } from "@/lib/errors/codes";
 import type { VisionProvider, VisionAnalyzePageInput, VisionAnalyzeDocumentInput, VisionPageStructure, VisionDocumentAnalysis } from "./provider";
 import { VisionPageStructureSchema, VisionDocumentAnalysisSchema } from "./provider";
 
-const CANONICAL_MODEL = "qwen/qwen3-vl-32b-instruct";
-const CANONICAL_BASE_URL = "https://openrouter.ai/api/v1";
-
 function getClient(): OpenAI {
-  const cfg = getConfig() as any;
-  const apiKey = cfg.OPENROUTER_API_KEY || cfg.VISION_API_KEY || cfg.AI_API_KEY;
-  if (!apiKey) throw new AppError(ErrorCodes.CONFIGURATION_ERROR, "OPENROUTER_API_KEY missing for Vision. Set OPENROUTER_API_KEY");
-  const baseURL = cfg.OPENROUTER_BASE_URL || cfg.VISION_BASE_URL || cfg.AI_BASE_URL || CANONICAL_BASE_URL;
+  // Deprecated path — now delegates to normalized config. Keep for backward compat but no hardcoded model.
+  const { getVisionProviderConfigs } = require("@/lib/config");
+  const visionCfg = getVisionProviderConfigs().openrouter;
+  const cfg: any = getConfig();
+  const apiKey = visionCfg.apiKey || cfg.OPENROUTER_API_KEY || cfg.VISION_API_KEY || cfg.AI_API_KEY;
+  if (!apiKey) throw new AppError(ErrorCodes.CONFIGURATION_ERROR, "OPENROUTER_API_KEY missing for Vision. Set OPENROUTER_API_KEY or OPENROUTER_VISION_MODEL via .env");
+  const baseURL = visionCfg.baseUrl || cfg.OPENROUTER_BASE_URL || cfg.VISION_BASE_URL || cfg.AI_BASE_URL;
   const sanitizedBase = baseURL.replace(/\/chat\/completions\/?$/, "").replace(/\/$/, "");
   return new OpenAI({
     apiKey,
@@ -27,8 +27,10 @@ function getClient(): OpenAI {
 }
 
 function getModel(): string {
-  const cfg = getConfig() as any;
-  return cfg.OPENROUTER_MODEL || cfg.VISION_MODEL || cfg.AI_MODEL || CANONICAL_MODEL;
+  const { getVisionProviderConfigs } = require("@/lib/config");
+  const visionCfg = getVisionProviderConfigs().openrouter;
+  if (!visionCfg.model) throw new AppError(ErrorCodes.CONFIGURATION_ERROR, "OPENROUTER_VISION_MODEL missing but openrouter enabled");
+  return visionCfg.model;
 }
 
 // ── Preflight: verify model available + credits before launching 20 expensive batches ──
@@ -263,6 +265,12 @@ function buildMultimodalUserContent(text: string, pages: VisionAnalyzePageInput[
 }
 
 export class OpenRouterVisionProvider implements VisionProvider {
+  readonly id = "openrouter" as const;
+  readonly capabilities = { visionInput: true, structuredOutput: true, multiImage: true, imageToText: true, maxImagesPerRequest: 5, maxContextTokens: 131072 } as const;
+  async preflight(): Promise<any> {
+    const r = await verifyVisionPreflight();
+    return { provider: "openrouter" as const, model: r.model || "qwen/qwen3-vl-32b-instruct", ok: r.ok, available: r.ok, reason: r.reason, latencyMs: 0, capabilities: this.capabilities };
+  }
   async analyzePage(input: VisionAnalyzePageInput): Promise<VisionPageStructure> {
     const client = getClient();
     const model = getModel();

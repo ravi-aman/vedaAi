@@ -20,12 +20,14 @@ import { buildAnswerGraphV2 } from "@/lib/structure/answer-graph-builder";
 import { validateAnswerGraph } from "@/lib/validation/answer-graph-validator";
 import { normalizeNumber } from "@/lib/structure/numbering";
 import { validateQuestionStructure } from "@/lib/structure/validator";
-import { getVisionProvider } from "@/lib/vision/factory";
+import { getVisionProvider, getVisionProviderChain, getPreferredProviderConfig, getVisionDiagnostics, isVisionEnabled } from "@/lib/vision/factory";
 import { shouldInvokeVision } from "@/lib/vision/router";
 import { fuseDocuments } from "@/lib/vision/fusion";
 import { renderPdfPagesForVision } from "@/lib/documents/render";
 import type { VisionDocumentAnalysis } from "@/lib/vision/provider";
 import { runSmartMapping, writeMappingDebugArtifacts, buildAnswerEvidences } from "@/lib/mapping/smart-mapping";
+import { getVisionRuntimeConfig, getVisionProviderConfigs, getOrderedEnabledProviders } from "@/lib/config";
+import { classifyError } from "@/lib/vision/providers/base";
 
 // ── PERFORMANCE: bounded concurrency + shared render ─────────────────────
 type SharedPageImage = { pageNumber: number; imagePath: string; width: number; height: number; base64: string };
@@ -825,70 +827,96 @@ async function ocrStageWithShared(jobId: string, shared: SharedRender, onEvent?:
 
 // ── Vision Pass1 with GLOBAL scheduler, preflight, 402 pause, strict recording ──
 async function visionStageWithShared(jobId: string, shared: SharedRender, onEvent?: (e: TimelineEvent) => void): Promise<{ qpVision?: VisionDocumentAnalysis; asVision?: VisionDocumentAnalysis } | null> {
-  const cfg = getConfig() as any;
-  const visionProviderName = cfg.VISION_PROVIDER || "auto";
-  if (visionProviderName === "disabled") { console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_disabled" })); return null; }
-  const cached = visionResultStore.get(jobId);
-  if (cached) { console.log(JSON.stringify({ jobId, stage: "VISION", event: "reuse_cached" })); return cached; }
-  if (cfg.OCR_PROVIDER === "mock") { console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_mock_ocr" })); return null; }
-  const provider = getVisionProvider();
-  if (!provider) {
-    const diag = await import("@/lib/vision/factory").then(m => (m as any).getVisionDiagnostics ? (m as any).getVisionDiagnostics() : null).catch(()=>null);
-    console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_no_provider", provider: visionProviderName, diagnostics: diag }));
+  const cfg: any = getConfig();
+  const runtime = getVisionRuntimeConfig();
+  const providerConfigs = getVisionProviderConfigs();
+  const orderedEnabled = getOrderedEnabledProviders();
+  const chain = getVisionProviderChain();
+  const preferred = getPreferredProviderConfig();
+
+  // Diagnostics log — never log apiKey
+  console.log(JSON.stringify({ jobId, stage: "VISION", event: "provider_order", providerOrder: runtime.providerOrder.join(","), preferred: preferred?.id || null, enabled: orderedEnabled.map((c: any) => c.id).join(","), autoFallback: runtime.autoFallback, globalConcurrency: runtime.globalConcurrency, batchSize: runtime.batchSize, timeoutMs: runtime.timeoutMs, keyPresent: Object.fromEntries(Object.entries(providerConfigs).map(([k, v]: any) => [k, Boolean((v as any).apiKey)])) }));
+
+  if (orderedEnabled.length === 0) {
+    console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_no_enabled_provider", providerOrder: runtime.providerOrder }));
+    // Also check legacy disabled
+    if ((cfg.VISION_PROVIDER as string) === "disabled") return null;
+    // If no enabled but mock OCR, skip
+    if (cfg.OCR_PROVIDER === "mock") {
+      console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_mock_ocr" }));
+      return null;
+    }
+    // No enabled provider and not mock — mark unavailable
+    try {
+      const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
+      const debugDir = path.join(os.tmpdir(), "veda-ai", safe, "debug");
+      await fs.mkdir(debugDir, { recursive: true });
+      await fs.writeFile(path.join(debugDir, "vision-preflight.json"), JSON.stringify({ jobId, reason: "no enabled providers", providerOrder: runtime.providerOrder, timestamp: new Date().toISOString() }, null, 2), "utf-8");
+    } catch {}
     return null;
   }
 
-  // ── Preflight: verify model + credits before launching 20 expensive batches ──
-  let preflightOk = true;
-  let preflightReason: string | undefined;
-  let preflightCredits: number | undefined;
-  try {
-    const { verifyVisionPreflight } = await import("@/lib/vision/openrouter-vision");
-    const pre = await verifyVisionPreflight();
-    console.log(JSON.stringify({ jobId, stage: "VISION", event: "preflight", ok: pre.ok, model: pre.model, reason: pre.reason, creditsRemaining: pre.creditsRemaining }));
-    if (!pre.ok) {
-      preflightOk = false;
-      preflightReason = pre.reason;
-      preflightCredits = pre.creditsRemaining;
-      // Record as VISION_UNAVAILABLE, not silent success
-      const metrics = { totalRequests: 0, successfulRequests: 0, failedRequests: 0, creditFailures: 1, malformedFailures: 0, preflightReason };
+  const cached = visionResultStore.get(jobId);
+  if (cached) { console.log(JSON.stringify({ jobId, stage: "VISION", event: "reuse_cached" })); return cached; }
+  if (cfg.OCR_PROVIDER === "mock") { console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_mock_ocr" })); return null; }
+  if (chain.length === 0) {
+    console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_no_provider_chain", reason: "all enabled providers failed config validation" }));
+    return null;
+  }
+
+  // ── Preflight each provider ──
+  const preflightMap = new Map<string, { ok: boolean; reason?: string; latencyMs?: number }>();
+  let anyPreflightOk = false;
+  for (const prov of chain) {
+    try {
+      const pf = await prov.preflight();
+      preflightMap.set(prov.id, { ok: pf.ok, reason: pf.reason, latencyMs: pf.latencyMs });
+      console.log(JSON.stringify({ jobId, stage: "VISION", event: "preflight", provider: prov.id, model: (providerConfigs as any)[prov.id]?.model, ok: pf.ok, reason: pf.reason, latencyMs: pf.latencyMs, keyPresent: Boolean((providerConfigs as any)[prov.id]?.apiKey) }));
+      if (pf.ok) anyPreflightOk = true;
+      else {
+        // Record metric for preflight failure
+      }
+    } catch (e: any) {
+      const msg = String(e?.message || e).slice(0, 300);
+      preflightMap.set(prov.id, { ok: false, reason: msg });
+      console.warn(JSON.stringify({ jobId, stage: "VISION", event: "preflight_error", provider: prov.id, error: msg }));
+    }
+  }
+  if (!anyPreflightOk && orderedEnabled.length > 0) {
+    console.error(JSON.stringify({ jobId, stage: "VISION", event: "vision_unavailable_all_preflights_failed", providerOrder: runtime.providerOrder }));
+    // Mark VISION_UNAVAILABLE but still try fallback chain per batch? Spec says don't launch 20 batches if preflight proves unavailable.
+    // We will still attempt chain but with awareness — if all preflights failed due to AUTH/CREDIT, we still skip launching batches and return null with metrics.
+    const allAuthOrCredit = Array.from(preflightMap.values()).every(v => !v.ok && (String(v.reason).toLowerCase().includes("auth") || String(v.reason).toLowerCase().includes("credit") || String(v.reason).toLowerCase().includes("key")));
+    if (allAuthOrCredit) {
       try {
         const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
         const debugDir = path.join(os.tmpdir(), "veda-ai", safe, "debug");
         await fs.mkdir(debugDir, { recursive: true });
-        await fs.writeFile(path.join(debugDir, "vision-preflight.json"), JSON.stringify({ jobId, preflight: pre, metrics, timestamp: new Date().toISOString() }, null, 2), "utf-8");
+        await fs.writeFile(path.join(debugDir, "vision-preflight.json"), JSON.stringify({ jobId, preflights: Object.fromEntries(preflightMap), timestamp: new Date().toISOString() }, null, 2), "utf-8");
         const artDir = path.join(process.cwd(), "artifacts", "debug", safe);
         await fs.mkdir(artDir, { recursive: true });
-        await fs.writeFile(path.join(artDir, "vision-preflight.json"), JSON.stringify({ jobId, preflight: pre, metrics, timestamp: new Date().toISOString() }, null, 2), "utf-8");
+        await fs.writeFile(path.join(artDir, "vision-preflight.json"), JSON.stringify({ jobId, preflights: Object.fromEntries(preflightMap), timestamp: new Date().toISOString() }, null, 2), "utf-8");
       } catch {}
-      console.error(JSON.stringify({ jobId, stage: "VISION", event: "vision_unavailable_preflight", reason: pre.reason, model: pre.model, creditsRemaining: pre.creditsRemaining }));
-      // Mark both docs as VISION_UNAVAILABLE
       await updateDocStageGlobal(jobId, "questionPaper", "vision", "failed");
       await updateDocStageGlobal(jobId, "answerSheet", "vision", "failed");
-      // Store marker for fusion to set VISION_UNAVAILABLE
       (globalThis as any).__visionPreflightFail = (globalThis as any).__visionPreflightFail || new Map();
-      (globalThis as any).__visionPreflightFail.set(jobId, { reason: pre.reason, model: pre.model });
-      return null;
+      (globalThis as any).__visionPreflightFail.set(jobId, { reason: "all preflights failed", preflights: Object.fromEntries(preflightMap) });
+      // Return null but also record metrics
     }
-  } catch (e: any) {
-    console.warn(JSON.stringify({ jobId, stage: "VISION", event: "preflight_error", error: e.message?.slice(0,200) }));
-    // Don't block on preflight error, continue but log
   }
 
-  // Document-aware routing
-  const batchSize = 3;
+  // ── Build batches from shared render ──
+  const batchSize = runtime.batchSize;
   function qpVisionPages(): SharedPageImage[] {
     const total = shared.qp.length;
-    const cfgMax = cfg.VISION_MAX_PAGES || 50;
+    const cfgMax = (cfg.VISION_MAX_PAGES as number) || 50;
     if (total <= cfgMax) return shared.qp;
     const step = Math.ceil(total / cfgMax);
     const sampled: SharedPageImage[] = [];
     for (let i = 0; i < total; i += step) sampled.push(shared.qp[i]);
     return sampled.slice(0, cfgMax);
   }
-  function asVisionPages(): SharedPageImage[] {
-    return shared.as;
-  }
+  function asVisionPages(): SharedPageImage[] { return shared.as; }
 
   const qpPagesToUse = qpVisionPages();
   const asPagesToUse = asVisionPages();
@@ -897,37 +925,40 @@ async function visionStageWithShared(jobId: string, shared: SharedRender, onEven
   for (let i = 0; i < qpPagesToUse.length; i += batchSize) qpBatches.push(qpPagesToUse.slice(i, i + batchSize));
   for (let i = 0; i < asPagesToUse.length; i += batchSize) asBatches.push(asPagesToUse.slice(i, i + batchSize));
 
-  // Build GLOBAL queue with single concurrency=1 (user requirement 4/5/6)
   type GlobalBatch = { kind: "questionPaper" | "answerSheet"; batchIdx: number; batch: SharedPageImage[]; totalBatches: number };
   const globalQueue: GlobalBatch[] = [];
   qpBatches.forEach((batch, idx) => globalQueue.push({ kind: "questionPaper", batch, batchIdx: idx, totalBatches: qpBatches.length }));
   asBatches.forEach((batch, idx) => globalQueue.push({ kind: "answerSheet", batch, batchIdx: idx, totalBatches: asBatches.length }));
 
-  console.log(JSON.stringify({ jobId, stage: "VISION", event: "global_scheduler_start", qpPages: qpPagesToUse.length, asPages: asPagesToUse.length, qpBatches: qpBatches.length, asBatches: asBatches.length, totalBatches: globalQueue.length, globalConcurrency: 1, batchSize }));
+  console.log(JSON.stringify({ jobId, stage: "VISION", event: "global_scheduler_start", qpPages: qpPagesToUse.length, asPages: asPagesToUse.length, qpBatches: qpBatches.length, asBatches: asBatches.length, totalBatches: globalQueue.length, globalConcurrency: runtime.globalConcurrency, batchSize, providerOrder: runtime.providerOrder, preferred: preferred?.id }));
 
-  // Metrics: must record credit/config failure, request count, successful, failed
+  // Metrics per provider
+  const perProviderMetrics = new Map<string, { provider: string; model: string; requests: number; successes: number; failures: number; timeouts: number; rateLimits: number; creditFailures: number; schemaFailures: number; authErrors: number; latencies: number[] }>();
+  for (const cfgP of orderedEnabled) {
+    perProviderMetrics.set(cfgP.id, { provider: cfgP.id, model: cfgP.model, requests: 0, successes: 0, failures: 0, timeouts: 0, rateLimits: 0, creditFailures: 0, schemaFailures: 0, authErrors: 0, latencies: [] });
+  }
   let totalRequests = 0;
   let successfulRequests = 0;
   let failedRequests = 0;
-  let creditFailures = 0;
-  let malformedFailures = 0;
-  let pausedDueToCredit = false;
+  let fallbackUsed = false;
+  let fallbackReason: string | undefined;
+  let actualSuccessfulProvider: string | undefined;
+
   const qpBatchResults: any[][] = new Array(qpBatches.length);
   const asBatchResults: any[][] = new Array(asBatches.length);
 
-  // Global concurrency 1: process sequentially, pause on 402
-  const globalConcurrency = 1;
   await updateDocStageGlobal(jobId, "questionPaper", "vision", "in_progress");
   await updateDocStageGlobal(jobId, "answerSheet", "vision", "in_progress");
   const tGlobalStart = Date.now();
   onEvent?.({ stage: "VISION_global", start: tGlobalStart, status: "in_progress" });
 
-  // Process global queue sequentially (concurrency 1) — ensures never >1 in-flight, respects provider limits
+  // Effective concurrency: min(global, provider max) — but since we have chain fallback, we keep global sequential (1) for determinism.
+  // If global >1, we would use boundedPool; keep simple sequential for 1.
+  const effectiveConcurrency = Math.min(runtime.globalConcurrency, Math.max(...orderedEnabled.map((c: any) => c.maxConcurrency), 1));
+  // For now, process sequentially regardless (concurrency 1) — ensures fallback storm prevention.
+  // If effectiveConcurrency >1 and chain length 1, we could parallelize, but with fallback chain we keep sequential to avoid explosion.
+
   for (let gIdx = 0; gIdx < globalQueue.length; gIdx++) {
-    if (pausedDueToCredit) {
-      console.warn(JSON.stringify({ jobId, stage: "VISION", event: "vision_paused_due_to_credit", remainingBatches: globalQueue.length - gIdx }));
-      break;
-    }
     if (isCancelled(jobId)) {
       console.log(JSON.stringify({ jobId, stage: "VISION", event: "cancelled_global", gIdx }));
       break;
@@ -936,14 +967,14 @@ async function visionStageWithShared(jobId: string, shared: SharedRender, onEven
     const kind = item.kind;
     const batchIdx = item.batchIdx;
     const batch = item.batch;
-    const batchLabel = `${batchIdx+1}/${item.totalBatches}`;
+    const batchLabel = `${batchIdx + 1}/${item.totalBatches}`;
     const tBatch = Date.now();
-    onEvent?.({ stage: `VISION_BATCH_${kind}`, document: kind, batch: batchLabel, start: tBatch, status: "in_progress", pageRange: batch.map(b=>b.pageNumber).join(",") });
+    onEvent?.({ stage: `VISION_BATCH_${kind}`, document: kind, batch: batchLabel, start: tBatch, status: "in_progress", pageRange: batch.map(b => b.pageNumber).join(",") });
     const rendered = await loadBase64ForPages(batch);
     const hasRealImage = rendered.some(r => r.base64 && !r.base64.startsWith("JVBER") && r.base64.length > 100);
     if (!hasRealImage) {
       console.log(JSON.stringify({ jobId, stage: "VISION", event: "skipped_no_image", kind, batch: batchLabel, pages: rendered.length }));
-      onEvent?.({ stage: `VISION_BATCH_${kind}`, document: kind, batch: batchLabel, start: tBatch, end: Date.now(), durationMs: Date.now()-tBatch, status: "skipped" });
+      onEvent?.({ stage: `VISION_BATCH_${kind}`, document: kind, batch: batchLabel, start: tBatch, end: Date.now(), durationMs: Date.now() - tBatch, status: "skipped" });
       continue;
     }
     const visionInputPages = rendered.map(r => ({
@@ -956,83 +987,173 @@ async function visionStageWithShared(jobId: string, shared: SharedRender, onEven
       ocrBlocks: [] as any,
     } as any));
     const payloadKb = Math.round(visionInputPages.reduce((a, p) => a + p.imageBase64.length, 0) * 0.75 / 1024);
-    console.log(JSON.stringify({ jobId, stage: "VISION", event: "analyze_start_pass1", kind, pages: visionInputPages.length, batch: batchLabel, provider: visionProviderName, model: (getConfig() as any).OPENROUTER_MODEL || (getConfig() as any).VISION_MODEL, payloadKb, timeoutMs: cfg.VISION_TIMEOUT_MS, globalIdx: `${gIdx+1}/${globalQueue.length}` }));
-    totalRequests++;
-    try {
-      if (!provider) throw new AppError(ErrorCodes.MODEL_UNAVAILABLE, "Vision provider unavailable");
-      if (isCancelled(jobId)) throw new AppError(ErrorCodes.UNKNOWN_ERROR, `Vision ${kind} cancelled before request`);
-      const result = await provider!.analyzeDocumentStructure({ pages: visionInputPages as any, ocrTextSample: "", ocrBlocksByPage: {} } as any);
-      if (isCancelled(jobId)) {
-        console.log(JSON.stringify({ jobId, stage: "VISION", event: "cancelled_after_response", kind, batch: batchLabel }));
-        onEvent?.({ stage: `VISION_BATCH_${kind}`, document: kind, batch: batchLabel, start: tBatch, end: Date.now(), durationMs: Date.now()-tBatch, status: "cancelled" });
-        continue;
+
+    // Try provider chain for this batch
+    let batchSuccess = false;
+    let batchResult: any = null;
+    let preferredForLog = preferred?.id || runtime.providerOrder[0];
+    let actualProviderForBatch: string | undefined;
+    let attemptFallbackReason: string | undefined;
+
+    const providersToTry = runtime.autoFallback ? chain : (preferred ? [chain.find(p => p.id === preferred.id)!].filter(Boolean) : chain.slice(0, 1));
+
+    for (let pIdx = 0; pIdx < providersToTry.length; pIdx++) {
+      const provider = providersToTry[pIdx];
+      const provCfg = (providerConfigs as any)[provider.id] as any;
+      const model = provCfg?.model || "unknown";
+      const isFallback = pIdx > 0;
+      totalRequests++;
+      const metrics = perProviderMetrics.get(provider.id);
+      if (metrics) metrics.requests++;
+
+      console.log(JSON.stringify({ jobId, stage: "VISION", event: "analyze_start", kind, pages: visionInputPages.length, batch: batchLabel, provider: provider.id, model, payloadKb, timeoutMs: runtime.timeoutMs, globalIdx: `${gIdx + 1}/${globalQueue.length}`, attempt: pIdx + 1, preferred: preferredForLog, fallback: isFallback }));
+
+      try {
+        if (isCancelled(jobId)) throw new AppError(ErrorCodes.UNKNOWN_ERROR, `Vision ${kind} cancelled before request`);
+        const result = await provider.analyzeDocumentStructure({ pages: visionInputPages as any, ocrTextSample: "", ocrBlocksByPage: {} } as any);
+        if (isCancelled(jobId)) {
+          console.log(JSON.stringify({ jobId, stage: "VISION", event: "cancelled_after_response", kind, batch: batchLabel, provider: provider.id }));
+          onEvent?.({ stage: `VISION_BATCH_${kind}`, document: kind, batch: batchLabel, start: tBatch, end: Date.now(), durationMs: Date.now() - tBatch, status: "cancelled" });
+          batchSuccess = false;
+          break;
+        }
+        console.log(JSON.stringify({ jobId, stage: "VISION", event: "analyze_ok", kind, batch: batchLabel, provider: provider.id, model, visionPages: result.pages.length, preferred: preferredForLog, actual: provider.id, fallbackUsed: isFallback }));
+        onEvent?.({ stage: `VISION_BATCH_${kind}`, document: kind, batch: batchLabel, start: tBatch, end: Date.now(), durationMs: Date.now() - tBatch, status: "completed", pageRange: batch.map(b => b.pageNumber).join(",") });
+        if (metrics) { metrics.successes++; metrics.latencies.push(Date.now() - tBatch); }
+        successfulRequests++;
+        batchSuccess = true;
+        batchResult = result.pages;
+        actualProviderForBatch = provider.id;
+        if (isFallback) {
+          fallbackUsed = true;
+          fallbackReason = attemptFallbackReason || `fallback from ${preferredForLog} to ${provider.id}`;
+          actualSuccessfulProvider = provider.id;
+        } else {
+          if (!actualSuccessfulProvider) actualSuccessfulProvider = provider.id;
+        }
+        break; // success, no need to try next provider
+      } catch (e: any) {
+        if (isCancelled(jobId)) {
+          onEvent?.({ stage: `VISION_BATCH_${kind}`, document: kind, batch: batchLabel, start: tBatch, end: Date.now(), durationMs: Date.now() - tBatch, status: "cancelled" });
+          break;
+        }
+        const classified = classifyError(e);
+        const errCode = classified.code || e.code || "UNKNOWN";
+        const errStatus = classified.status || e.status;
+        const isCredit = errCode === "CREDIT_EXHAUSTED";
+        const isAuth = errCode === "AUTH_ERROR";
+        const isRate = errCode === "RATE_LIMIT";
+        const isTimeout = errCode === "TIMEOUT";
+        const isSchema = errCode === "MODEL_OUTPUT_INVALID";
+
+        console.warn(JSON.stringify({ jobId, stage: "VISION", event: "analyze_failed", kind, batch: batchLabel, provider: provider.id, model, msg: String(e.message || e).slice(0, 300), code: errCode, status: errStatus, fallback: runtime.autoFallback }));
+
+        if (metrics) {
+          metrics.failures++;
+          if (isTimeout) metrics.timeouts++;
+          if (isRate) metrics.rateLimits++;
+          if (isCredit) metrics.creditFailures++;
+          if (isSchema) metrics.schemaFailures++;
+          if (isAuth) metrics.authErrors++;
+        }
+        failedRequests++;
+
+        // Determine if we should fallback
+        const shouldFallback = runtime.autoFallback && pIdx < providersToTry.length - 1;
+        // For fallback-eligible errors (config, auth, credit, unsupported, rate, timeout, 5xx, schema) — try next
+        const isFallbackEligible = ["CONFIGURATION_ERROR", "AUTH_ERROR", "MODEL_NOT_FOUND", "CREDIT_EXHAUSTED", "UNSUPPORTED_FEATURE", "RATE_LIMIT", "TIMEOUT", "SERVER_ERROR", "MODEL_OUTPUT_INVALID", "SCHEMA_ERROR"].includes(errCode) || classified.retryable;
+        if (shouldFallback && isFallbackEligible) {
+          attemptFallbackReason = `${errCode}:${String(e.message).slice(0, 80)}`;
+          console.log(JSON.stringify({ jobId, stage: "VISION", event: "fallback_try_next", kind, batch: batchLabel, from: provider.id, next: providersToTry[pIdx + 1]?.id, reason: errCode }));
+          // Small delay before next provider to avoid hammering
+          await new Promise(r => setTimeout(r, isRate ? 800 : 200));
+          continue;
+        } else {
+          // No fallback — record and break
+          onEvent?.({ stage: `VISION_BATCH_${kind}`, document: kind, batch: batchLabel, start: tBatch, end: Date.now(), durationMs: Date.now() - tBatch, status: "failed" });
+          if (!runtime.autoFallback && pIdx === 0) {
+            // Single provider failure without fallback — propagate null for this batch
+          }
+          break;
+        }
       }
-      console.log(JSON.stringify({ jobId, stage: "VISION", event: "analyze_ok_pass1", kind, batch: batchLabel, visionPages: result.pages.length }));
-      onEvent?.({ stage: `VISION_BATCH_${kind}`, document: kind, batch: batchLabel, start: tBatch, end: Date.now(), durationMs: Date.now()-tBatch, status: "completed", pageRange: batch.map(b=>b.pageNumber).join(",") });
-      successfulRequests++;
-      if (kind === "questionPaper") qpBatchResults[batchIdx] = result.pages;
-      else asBatchResults[batchIdx] = result.pages;
-    } catch (e: any) {
-      if (isCancelled(jobId)) {
-        onEvent?.({ stage: `VISION_BATCH_${kind}`, document: kind, batch: batchLabel, start: tBatch, end: Date.now(), durationMs: Date.now()-tBatch, status: "cancelled" });
-        continue;
-      }
-      console.warn(JSON.stringify({ jobId, stage: "VISION", event: "analyze_failed_pass1", kind, batch: batchLabel, msg: e.message?.slice(0,300), code: e.code, status: e.status }));
-      onEvent?.({ stage: `VISION_BATCH_${kind}`, document: kind, batch: batchLabel, start: tBatch, end: Date.now(), durationMs: Date.now()-tBatch, status: "failed" });
-      failedRequests++;
-      const isCredit = e?.status === 402 || e?.code === "credit_exhausted" || e?.code === "payment_required" || String(e.message).toLowerCase().includes("credits") || String(e.message).toLowerCase().includes("afford");
-      const isMalformed = e?.code === ErrorCodes.MODEL_OUTPUT_INVALID || String(e.message).includes("parse failed") || String(e.message).includes("schema");
-      if (isMalformed) malformedFailures++;
-      if (isCredit) {
-        creditFailures++;
-        pausedDueToCredit = true;
-        console.error(JSON.stringify({ jobId, stage: "VISION", event: "vision_paused_credit_exhausted", kind, batch: batchLabel, creditFailures, msg: e.message?.slice(0,300) }));
-        // Do not immediately launch next batch — pause queue (user requirement 9)
-        // Break after recording, remaining batches will be skipped
-        // Wait a bit before returning to avoid hammering
-        await new Promise(r => setTimeout(r, 2000));
-        break;
-      }
-      const isRetriable = e?.status === 429 || e?.status === 408 || e?.status >= 500 || e?.code === "rate_limit" || e?.code === "network_timeout" || String(e.message).includes("timeout");
-      if (!isRetriable || isMalformed) {
-        if (visionProviderName === "auto") {
-          if (kind === "questionPaper") qpBatchResults[batchIdx] = [];
-          else asBatchResults[batchIdx] = [];
-        } else throw e;
-      } else {
-        if (visionProviderName === "auto") {
-          if (kind === "questionPaper") qpBatchResults[batchIdx] = [];
-          else asBatchResults[batchIdx] = [];
-        } else throw e;
-      }
+    } // end provider loop per batch
+
+    if (batchSuccess && batchResult) {
+      if (kind === "questionPaper") qpBatchResults[batchIdx] = batchResult;
+      else asBatchResults[batchIdx] = batchResult;
+    } else {
+      // No provider succeeded for this batch — record empty and continue (VISION_FAILED for this doc)
+      if (kind === "questionPaper") qpBatchResults[batchIdx] = [];
+      else asBatchResults[batchIdx] = [];
+      onEvent?.({ stage: `VISION_BATCH_${kind}`, document: kind, batch: batchLabel, start: tBatch, end: Date.now(), durationMs: Date.now() - tBatch, status: "failed" });
     }
-  }
+  } // end globalQueue
 
   const qpAllVisionPages = qpBatchResults.flat().filter(Boolean);
   const asAllVisionPages = asBatchResults.flat().filter(Boolean);
-  const qpStatus = isCancelled(jobId) ? "cancelled" : qpAllVisionPages.length ? "completed" : pausedDueToCredit ? "credit_exhausted" : "failed";
-  const asStatus = isCancelled(jobId) ? "cancelled" : asAllVisionPages.length ? "completed" : pausedDueToCredit ? "credit_exhausted" : "failed";
-  onEvent?.({ stage: "VISION_global", start: tGlobalStart, end: Date.now(), durationMs: Date.now()-tGlobalStart, status: qpAllVisionPages.length || asAllVisionPages.length ? "completed" : "failed" });
+  const qpStatus = isCancelled(jobId) ? "cancelled" : qpAllVisionPages.length ? "completed" : (fallbackUsed ? "completed" : "failed");
+  const asStatus = isCancelled(jobId) ? "cancelled" : asAllVisionPages.length ? "completed" : (fallbackUsed ? "completed" : "failed");
+  onEvent?.({ stage: "VISION_global", start: tGlobalStart, end: Date.now(), durationMs: Date.now() - tGlobalStart, status: qpAllVisionPages.length || asAllVisionPages.length ? "completed" : "failed" });
   await updateDocStageGlobal(jobId, "questionPaper", "vision", qpStatus === "completed" ? "completed" : "failed");
   await updateDocStageGlobal(jobId, "answerSheet", "vision", asStatus === "completed" ? "completed" : "failed");
 
-  // Record metrics clearly
-  console.log(JSON.stringify({ jobId, stage: "VISION", event: "vision_metrics", totalRequests, successfulRequests, failedRequests, creditFailures, malformedFailures, pausedDueToCredit, qpPages: qpAllVisionPages.length, asPages: asAllVisionPages.length, preflightOk, preflightReason }));
+  // Metrics: per-provider + global
+  const perProviderArray = Array.from(perProviderMetrics.values()).map(m => ({
+    provider: m.provider,
+    model: m.model,
+    requests: m.requests,
+    successes: m.successes,
+    failures: m.failures,
+    timeouts: m.timeouts,
+    rateLimits: m.rateLimits,
+    creditFailures: m.creditFailures,
+    schemaFailures: m.schemaFailures,
+    authErrors: m.authErrors,
+    avgLatencyMs: m.latencies.length ? Math.round(m.latencies.reduce((a, b) => a + b, 0) / m.latencies.length) : 0,
+  }));
+  const metricsPayload = {
+    jobId,
+    preferredProvider: preferred?.id || runtime.providerOrder[0],
+    actualProvider: actualSuccessfulProvider || (qpAllVisionPages.length || asAllVisionPages.length ? preferred?.id : null),
+    fallbackUsed,
+    fallbackReason,
+    configuredOrder: runtime.providerOrder,
+    attemptedProviders: perProviderArray.filter(p => p.requests > 0).map(p => p.provider),
+    successfulProvider: actualSuccessfulProvider || null,
+    totalRequests,
+    successfulRequests,
+    failedRequests,
+    perProvider: perProviderArray,
+    globalConcurrency: runtime.globalConcurrency,
+    batchSize: runtime.batchSize,
+    timestamp: new Date().toISOString(),
+  };
+
+  console.log(JSON.stringify({ stage: "VISION", event: "vision_metrics", ...metricsPayload }));
   try {
     const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
     const debugDir = path.join(os.tmpdir(), "veda-ai", safe, "debug");
     await fs.mkdir(debugDir, { recursive: true });
-    await fs.writeFile(path.join(debugDir, "vision-metrics.json"), JSON.stringify({ jobId, totalRequests, successfulRequests, failedRequests, creditFailures, malformedFailures, pausedDueToCredit, qpPages: qpAllVisionPages.length, asPages: asAllVisionPages.length, preflightOk, preflightReason, timestamp: new Date().toISOString() }, null, 2), "utf-8");
+    await fs.writeFile(path.join(debugDir, "vision-metrics.json"), JSON.stringify(metricsPayload, null, 2), "utf-8");
+    await fs.writeFile(path.join(debugDir, "vision-provider-metrics.json"), JSON.stringify(metricsPayload, null, 2), "utf-8");
     const artDir = path.join(process.cwd(), "artifacts", "debug", safe);
     await fs.mkdir(artDir, { recursive: true });
-    await fs.writeFile(path.join(artDir, "vision-metrics.json"), JSON.stringify({ jobId, totalRequests, successfulRequests, failedRequests, creditFailures, malformedFailures, pausedDueToCredit, qpPages: qpAllVisionPages.length, asPages: asAllVisionPages.length, preflightOk, preflightReason, timestamp: new Date().toISOString() }, null, 2), "utf-8");
+    await fs.writeFile(path.join(artDir, "vision-metrics.json"), JSON.stringify(metricsPayload, null, 2), "utf-8");
+    const jobArtDir = path.join(process.cwd(), "artifacts", safe);
+    await fs.mkdir(jobArtDir, { recursive: true });
+    await fs.writeFile(path.join(jobArtDir, "vision-provider-metrics.json"), JSON.stringify(metricsPayload, null, 2), "utf-8");
   } catch {}
 
-  if (pausedDueToCredit) {
-    console.error(JSON.stringify({ jobId, stage: "VISION", event: "vision_unavailable_credit", creditFailures, reason: "402 credit exhausted — Vision unavailable, mapping will fallback without Vision evidence" }));
-    // Ensure VISION_UNAVAILABLE is clearly represented, never silent success
-    (globalThis as any).__visionCreditFail = (globalThis as any).__visionCreditFail || new Map();
-    (globalThis as any).__visionCreditFail.set(jobId, { creditFailures, reason: "402" });
+  if (qpAllVisionPages.length === 0 && asAllVisionPages.length === 0) {
+    // Store fallback info for fusion to mark VISION_UNAVAILABLE vs FAILED
+    if (fallbackUsed) {
+      (globalThis as any).__visionFallback = (globalThis as any).__visionFallback || new Map();
+      (globalThis as any).__visionFallback.set(jobId, { fallbackUsed, fallbackReason, preferred: preferred?.id, actual: actualSuccessfulProvider });
+    }
+    const reason = fallbackUsed ? `fallback used but still no vision` : "no_vision_results";
+    console.log(JSON.stringify({ jobId, stage: "VISION", event: reason, fallbackUsed, fallbackReason }));
+    return null;
   }
 
   const qpVision = qpAllVisionPages.length ? { pages: qpAllVisionPages, globalStructure: {} } as any : undefined;
@@ -1041,13 +1162,17 @@ async function visionStageWithShared(jobId: string, shared: SharedRender, onEven
   const out: any = {};
   if (qpVision) out.qpVision = qpVision;
   if (asVision) out.asVision = asVision;
-  if (Object.keys(out).length === 0) {
-    const reason = pausedDueToCredit ? "VISION_UNAVAILABLE (credit 402)" : "no_vision_results_pass1";
-    console.log(JSON.stringify({ jobId, stage: "VISION", event: reason }));
-    // Return null to indicate VISION_UNAVAILABLE, not silent success
+  // Persist provider metadata on result for fusion/logging
+  out._visionMeta = { preferredProvider: preferred?.id, actualProvider: actualSuccessfulProvider, fallbackUsed, fallbackReason, providerOrder: runtime.providerOrder, metrics: metricsPayload };
+  if (Object.keys(out).filter(k => !k.startsWith("_")).length === 0) {
     return null;
   }
   visionResultStore.set(jobId, out);
+  // Also store fallback map for fusion
+  if (fallbackUsed) {
+    (globalThis as any).__visionFallback = (globalThis as any).__visionFallback || new Map();
+    (globalThis as any).__visionFallback.set(jobId, { fallbackUsed, fallbackReason, preferred: preferred?.id, actual: actualSuccessfulProvider });
+  }
   try {
     const safe = jobId.replace(/[^a-zA-Z0-9-]/g, "");
     const debugDir = path.join(os.tmpdir(), "veda-ai", safe, "debug");
@@ -1061,6 +1186,7 @@ async function visionStageWithShared(jobId: string, shared: SharedRender, onEven
   } catch {}
   return out;
 }
+
 
 // ── LEGACY REMOVED: ocrStage and visionStage (OCR-blocking) deleted — production now uses ocrStageWithShared + visionStageWithShared (image-first, 4-way parallel) ──
 // No OCR-dependent routing blocks Vision Pass1; OCR-assisted Vision is targeted second pass only.

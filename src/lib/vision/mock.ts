@@ -2,6 +2,9 @@
 import type { VisionProvider, VisionAnalyzePageInput, VisionAnalyzeDocumentInput, VisionPageStructure, VisionDocumentAnalysis } from "./provider";
 
 export class MockVisionProvider implements VisionProvider {
+  readonly id = "openrouter" as const; // mock pretends openrouter for tests
+  readonly capabilities = { visionInput: false, structuredOutput: true, multiImage: false, imageToText: false, maxImagesPerRequest: 0 } as const;
+  async preflight(): Promise<any> { return { provider: "openrouter", model: "mock", ok: true, available: true, reason: "mock", latencyMs: 0, capabilities: this.capabilities }; }
   async analyzePage(input: VisionAnalyzePageInput): Promise<VisionPageStructure> {
     return {
       pageNumber: input.pageNumber,

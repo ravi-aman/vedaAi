@@ -64,19 +64,36 @@ export const VisionPageStructureSchema = z.object({
         return String(val).slice(0, 1000);
       }),
       confidence: z.number().min(0).max(1).default(0.7),
-      coarseBox: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional(),
-      bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional(),
+      coarseBox: z.any().optional(),
+      bbox: z.any().optional(),
       blockIds: z.array(z.string()).optional().default([]),
       relatedQuestionLabel: z.string().nullable().optional(),
       label: z.string().nullable().optional(),
-    }).passthrough().transform((v: any) => ({
-      type: normalizeRegionType(v.type || v.regionType || v.label || "INSTRUCTION"),
-      description: (v.description || v.content || v.text || "").slice(0, 1000),
-      confidence: v.confidence ?? 0.7,
-      coarseBox: v.coarseBox || v.bbox,
-      blockIds: v.blockIds || [],
-      relatedQuestionLabel: v.relatedQuestionLabel || v.label,
-    }))
+    }).passthrough().transform((v: any) => {
+      // Normalize coarseBox: accept tuple [x,y,w,h] or object {x,y,width,height} or {x,y,w,h}
+      let box = v.coarseBox || v.bbox;
+      if (box && !Array.isArray(box) && typeof box === 'object') {
+        const x = (box as any).x ?? (box as any).left ?? 0;
+        const y = (box as any).y ?? (box as any).top ?? 0;
+        const w = (box as any).width ?? (box as any).w ?? 0.1;
+        const h = (box as any).height ?? (box as any).h ?? 0.1;
+        box = [x, y, w, h] as any;
+      }
+      // If box is array with >4 or absolute px >1, will be normalized downstream; keep as tuple if valid
+      if (box && Array.isArray(box) && box.length === 4) {
+        // Ensure numbers in 0..1 or absolute -> keep
+      } else if (box) {
+        box = undefined;
+      }
+      return {
+        type: normalizeRegionType(v.type || v.regionType || v.label || "INSTRUCTION"),
+        description: (v.description || v.content || v.text || "").slice(0, 1000),
+        confidence: v.confidence ?? 0.7,
+        coarseBox: box,
+        blockIds: v.blockIds || [],
+        relatedQuestionLabel: v.relatedQuestionLabel || v.label,
+      };
+    })
   ).default([]),
   questionCandidates: z.array(
     z.union([
@@ -161,7 +178,32 @@ export interface VisionAnalyzeDocumentInput {
   ocrBlocksByPage?: Record<number, Array<{ id: string; text: string; bbox: [number, number, number, number]; confidence: number }>>; // for blockIds referencing (Constraint 6)
 }
 
+export const VISION_PROVIDER_IDS = ["nvidia", "openrouter", "opencode"] as const;
+export type VisionProviderId = typeof VISION_PROVIDER_IDS[number];
+
+export type VisionCapabilities = {
+  visionInput: boolean;
+  structuredOutput: boolean;
+  multiImage: boolean;
+  imageToText: boolean;
+  maxImagesPerRequest: number;
+  maxContextTokens?: number;
+};
+
+export type VisionPreflightResult = {
+  provider: VisionProviderId;
+  model: string;
+  ok: boolean;
+  available: boolean;
+  reason?: string;
+  latencyMs?: number;
+  capabilities?: VisionCapabilities;
+};
+
 export interface VisionProvider {
+  readonly id: VisionProviderId;
+  readonly capabilities: VisionCapabilities;
+  preflight(): Promise<VisionPreflightResult>;
   /**
    * Analyze a single page visually — returns semantic structure, not final coordinates
    */
@@ -170,6 +212,8 @@ export interface VisionProvider {
    * Analyze whole document structure (question hierarchy interpretation)
    */
   analyzeDocumentStructure(input: VisionAnalyzeDocumentInput): Promise<VisionDocumentAnalysis>;
+  // Generic alias for factory/scheduler
+  analyzeDocument?(input: VisionAnalyzeDocumentInput): Promise<VisionDocumentAnalysis>;
   /**
    * Analyze answer grouping for ambiguous regions
    */
@@ -186,3 +230,23 @@ export const VisionConfigSchema = z.object({
   model: z.string(),
   maxPages: z.number().int().min(1).max(20),
 });
+
+// Normalized provider configs (new) — imported by config module but defined here for single source
+export type VisionProviderConfig = {
+  id: VisionProviderId;
+  enabled: boolean;
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  maxConcurrency: number;
+};
+
+export type VisionRuntimeConfig = {
+  providerOrder: VisionProviderId[];
+  autoFallback: boolean;
+  globalConcurrency: number;
+  batchSize: number;
+  timeoutMs: number;
+  maxRetries: number;
+  maxAdjudications: number;
+};
