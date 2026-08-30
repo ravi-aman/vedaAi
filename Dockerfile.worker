@@ -1,0 +1,33 @@
+# PaddleOCR Worker — long-running container for Vercel remote backend
+FROM python:3.11-slim
+
+# System deps for canvas, mupdf, paddle
+RUN apt-get update && apt-get install -y \
+  build-essential curl git \
+  libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev \
+  libgl1 libglib2.0-0 \
+  && rm -rf /var/lib/apt/lists/*
+
+# Node 20
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs
+
+WORKDIR /app
+
+# Python deps
+COPY scripts/paddle_ocr_worker.py ./scripts/paddle_ocr_worker.py
+COPY requirements-worker.txt ./requirements-worker.txt
+RUN pip install --no-cache-dir -r requirements-worker.txt || pip install --no-cache-dir paddleocr paddlex paddlepaddle pillow psutil mupdf
+
+# Node deps
+COPY package*.json ./
+RUN npm ci --omit=dev || npm install
+
+COPY . .
+
+# Pre-provision Paddle models (optional warm cache)
+# RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(lang='en',ocr_version='PP-OCRv5',use_doc_orientation_classify=False,use_doc_unwarping=False,use_textline_orientation=False,text_detection_model_name='PP-OCRv5_mobile_det',text_recognition_model_name='en_PP-OCRv5_mobile_rec')"
+
+ENV PROCESSING_BACKEND=local
+ENV NODE_ENV=production
+
+CMD ["npm", "run", "worker"]

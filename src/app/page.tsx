@@ -44,17 +44,30 @@ export default function UploadPage() {
     }
   };
 
+  // Durable jobId: localStorage + window (survives refresh, Vercel multi-invocation, and HMR)
+  const getStoredJobId = () => {
+    try {
+      const ls = typeof window !== "undefined" ? localStorage.getItem("vedaJobId") : null;
+      return (window as any).__vedaJobId || ls || null;
+    } catch { return (window as any).__vedaJobId || null; }
+  };
+  const setStoredJobId = (id: string) => {
+    (window as any).__vedaJobId = id;
+    try { localStorage.setItem("vedaJobId", id); } catch {}
+    try { document.cookie = `vedaJobId=${id}; path=/; max-age=86400; SameSite=Lax`; } catch {}
+  };
+
   const uploadFile = async (f: File, kind: "questionPaper" | "answerSheet", setter: (s: FileState) => void) => {
     setter({ file: f, name: f.name, size: f.size, uploading: true });
     setJobError(null);
     try {
-      let jobId = (window as any).__vedaJobId;
+      let jobId = getStoredJobId();
       if (!jobId) {
         const res = await fetch("/api/jobs", { method: "POST" });
         if (!res.ok) throw new Error("Failed to create job");
         const data = await res.json();
         jobId = data.jobId;
-        (window as any).__vedaJobId = jobId;
+        setStoredJobId(jobId);
       }
       const form = new FormData();
       form.append("file", f);
@@ -88,7 +101,7 @@ export default function UploadPage() {
     if (!canStart) return;
     setStarting(true);
     setJobError(null);
-    const jobId = (window as any).__vedaJobId;
+    const jobId = getStoredJobId();
     if (!jobId) {
       setJobError("No job found, please re-upload");
       setStarting(false);

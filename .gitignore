@@ -48,3 +48,5 @@ veda-uploads/
 next-env.d.ts
 /artifacts
 /fixtures
+# production env (never commit, for vercel paste only)
+.env.production

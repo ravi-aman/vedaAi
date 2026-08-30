@@ -6,6 +6,9 @@ import type { ProcessingJob } from "@/types";
 import { getOrCreateGuestSession } from "@/lib/auth/guest";
 import { createClient } from "@/lib/supabase/server";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 export async function POST(req: NextRequest) {
   try {
     const cfg = getConfig();

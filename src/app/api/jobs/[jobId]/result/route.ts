@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jobStore } from "@/lib/storage";
 import { resultStore } from "@/lib/jobs/runner";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 import type { ProcessingResult, QuestionResult, AnswerResult } from "@/types";
 import { getGuestSession, isGraceExpired } from "@/lib/auth/guest";
 import { createClient } from "@/lib/supabase/server";

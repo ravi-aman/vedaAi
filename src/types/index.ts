@@ -3,6 +3,7 @@ export type ProcessingStage =
   | "CREATED"
   | "UPLOADING"
   | "UPLOADED"
+  | "QUEUED"
   | "VALIDATING"
   | "PREPROCESSING"
   | "OCR_SUBMITTED"
@@ -209,9 +210,16 @@ export interface ProcessingJob {
   guestSessionId?: string | null;
   userId?: string | null;
   claimedAt?: string | null;
+  // Durable queue / heartbeat (Phase 10-11)
+  heartbeatAt?: string | null;
+  claimedBy?: string | null;
+  attemptCount?: number;
+  queuedAt?: string | null;
+  startedAt?: string | null;
   progress: {
     stageStates: Record<ProcessingStage, "pending" | "in_progress" | "completed" | "failed" | "skipped">;
     currentStageProgress?: number;
+    docStageStates?: Record<string, Record<string, string>>;
   };
   error?: ProcessingError;
   pipelineVersion: string;

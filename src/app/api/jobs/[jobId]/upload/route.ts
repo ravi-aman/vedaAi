@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jobStore, fileStorage, documentStore, pageStoreApi, generateId } from "@/lib/storage";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 import { validateFile } from "@/lib/files/validation";
 import { inspectPdf, inspectImage } from "@/lib/documents/pdf";
 import { getConfig } from "@/lib/config";

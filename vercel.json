@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "src/app/api/jobs/route.ts": { "maxDuration": 10 },
+    "src/app/api/jobs/[jobId]/upload/route.ts": { "maxDuration": 60 },
+    "src/app/api/jobs/[jobId]/start/route.ts": { "maxDuration": 30 },
+    "src/app/api/jobs/[jobId]/route.ts": { "maxDuration": 10 },
+    "src/app/api/jobs/[jobId]/result/route.ts": { "maxDuration": 30 }
+  },
+  "crons": []
+}

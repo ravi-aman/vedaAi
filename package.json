@@ -14,7 +14,9 @@
     "assessment:smoke-test": "tsx scripts/assessment-smoke.ts",
     "audit": "tsx scripts/audit.ts",
     "evaluate": "tsx scripts/evaluate.ts",
-    "test:aws": "tsx scripts/aws-smoke.ts"
+    "test:aws": "tsx scripts/aws-smoke.ts",
+    "worker": "tsx src/lib/jobs/worker.ts",
+    "worker:docker": "docker build -t veda-worker . && docker run --env-file .env veda-worker"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.5",

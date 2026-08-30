@@ -1,0 +1,6 @@
+paddleocr
+paddlex
+paddlepaddle
+pillow
+psutil
+mupdf
