@@ -139,6 +139,21 @@ export function resetS3ClientForTest() {
 }
 export const resetGcsStorageForTest = resetS3ClientForTest;
 
+export async function getPresignedPutUrl(bucket: string, key: string, contentType: string, expiresSec = 3600): Promise<string> {
+  const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
+  const client = getS3Client();
+  const cmd = new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: contentType });
+  // For browser PUT, we sign with content-type; browser must send same header
+  return getSignedUrl(client as any, cmd as any, { expiresIn: expiresSec });
+}
+
+export async function getPresignedGetUrl(bucket: string, key: string, expiresSec = 3600): Promise<string> {
+  const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
+  const client = getS3Client();
+  const cmd = new GetObjectCommand({ Bucket: bucket, Key: key });
+  return getSignedUrl(client as any, cmd as any, { expiresIn: expiresSec });
+}
+
 export async function createS3BucketIfNotExists(bucket: string): Promise<void> {
   // no-op: assume bucket exists; creation requires extra permissions
 }

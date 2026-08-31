@@ -65,12 +65,75 @@ export default function UploadPage() {
   const uploadFile = async (f: File, kind: "questionPaper" | "answerSheet", setter: (s: FileState) => void) => {
     setter({ file: f, name: f.name, size: f.size, uploading: true });
     setJobError(null);
-    const attemptUpload = async (jobId: string): Promise<any> => {
+
+    // Direct S3 upload bypasses Vercel 4.5MB limit — used for >4MB files or when presign available
+    const attemptDirectS3Upload = async (jobId: string): Promise<any> => {
+      // 1. Get presigned PUT URL from server
+      const presignRes = await fetch(`/api/jobs/${jobId}/presign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, fileName: f.name, contentType: f.type || "application/pdf", fileSize: f.size }),
+      });
+      const presignData: any = await presignRes.json().catch(() => ({}));
+      if (!presignRes.ok) {
+        const err: any = new Error(presignData.error || "Failed to get upload URL");
+        err.code = presignData.code;
+        err.status = presignRes.status;
+        throw err;
+      }
+      const { presignedUrl, fileId, s3Key, bucket, requiredHeaders } = presignData;
+      // 2. PUT directly to S3 (bypasses Vercel)
+      const putRes = await fetch(presignedUrl, {
+        method: "PUT",
+        headers: requiredHeaders || { "Content-Type": f.type || "application/pdf" },
+        body: f,
+      });
+      if (!putRes.ok) {
+        const txt = await putRes.text().catch(() => "");
+        throw new Error(`S3 upload failed ${putRes.status}: ${txt.slice(0, 200)}`);
+      }
+      // 3. Tell server to register file (server will fetch from S3 and inspect)
+      const completeRes = await fetch(`/api/jobs/${jobId}/upload`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, fileId, s3Key, bucket, fileName: f.name, size: f.size }),
+      });
+      const completeData: any = await completeRes.json().catch(async () => {
+        const txt = await completeRes.text().catch(() => "");
+        // Handle non-JSON (e.g. 413 plain text)
+        if (!completeRes.ok) throw new Error(txt.slice(0, 300) || "Upload failed");
+        throw new Error(`Unexpected response: ${txt.slice(0, 200)}`);
+      });
+      if (!completeRes.ok) {
+        const err: any = new Error(completeData.error || "Upload failed");
+        err.code = completeData.code;
+        err.status = completeRes.status;
+        throw err;
+      }
+      return completeData;
+    };
+
+    const attemptProxyUpload = async (jobId: string): Promise<any> => {
       const form = new FormData();
       form.append("file", f);
       form.append("kind", kind);
       const res = await fetch(`/api/jobs/${jobId}/upload`, { method: "POST", body: form });
-      const data = await res.json();
+      // Handle Vercel 413 plain text (not JSON)
+      const ct = res.headers.get("content-type") || "";
+      let data: any;
+      if (ct.includes("application/json")) {
+        data = await res.json().catch(() => ({}));
+      } else {
+        const txt = await res.text().catch(() => "");
+        if (!res.ok) {
+          // Vercel returns "Request Entity Too Large" as text
+          if (txt.includes("Request Entity") || res.status === 413) {
+            throw new Error("File too large for direct upload (Vercel 4.5MB limit) — retrying via S3...");
+          }
+          throw new Error(txt.slice(0, 300) || "Upload failed");
+        }
+        data = await (async () => { try { return JSON.parse(txt); } catch { return {}; } })();
+      }
       if (!res.ok) {
         const err: any = new Error(data.error || "Upload failed");
         err.code = data.code;
@@ -78,6 +141,34 @@ export default function UploadPage() {
         throw err;
       }
       return data;
+    };
+
+    const attemptUpload = async (jobId: string): Promise<any> => {
+      // Use direct S3 for >4MB (Vercel limit) or if file is large
+      const useDirect = f.size > 4 * 1024 * 1024;
+      if (useDirect) {
+        try {
+          return await attemptDirectS3Upload(jobId);
+        } catch (e: any) {
+          // If direct fails due to S3 not configured, fallback to proxy for small files
+          if (e.code === "CONFIGURATION_ERROR" || String(e.message).includes("S3 upload failed") || String(e.message).includes("Request Entity")) {
+            console.warn(`[upload] direct S3 failed for ${f.name}, falling back to proxy:`, e.message);
+            // For large files proxy will still fail, so rethrow with helpful msg
+            if (f.size > 4 * 1024 * 1024) throw new Error(`File ${ (f.size/1024/1024).toFixed(1)}MB too large for Vercel — S3 direct upload failed: ${e.message}. Check AWS_S3_BUCKET and S3 CORS.`);
+          }
+          throw e;
+        }
+      }
+      // For small files, try proxy first, on 413 fallback to direct
+      try {
+        return await attemptProxyUpload(jobId);
+      } catch (e: any) {
+        if (String(e.message).includes("Request Entity") || e.status === 413) {
+          console.warn(`[upload] proxy 413, retrying direct S3 for ${f.name}`);
+          return await attemptDirectS3Upload(jobId);
+        }
+        throw e;
+      }
     };
     try {
       let jobId = getStoredJobId();
