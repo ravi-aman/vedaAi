@@ -9,7 +9,12 @@ function getS3Client(): S3Client {
   if (s3Client) return s3Client;
   const cfg = getConfig() as any;
   const region = cfg.AWS_REGION || "us-east-1";
-  const opts: any = { region };
+  const opts: any = {
+    region,
+    // Disable flexible checksums for presigned PUT (otherwise browser must send x-amz-checksum-* headers -> extra CORS preflight)
+    requestChecksumCalculation: "WHEN_REQUIRED" as any,
+    responseChecksumValidation: "WHEN_REQUIRED" as any,
+  };
   if (cfg.AWS_ACCESS_KEY_ID && cfg.AWS_SECRET_ACCESS_KEY) {
     opts.credentials = {
       accessKeyId: cfg.AWS_ACCESS_KEY_ID,
