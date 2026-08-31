@@ -143,6 +143,11 @@ export default function UploadPage() {
         if (data.code === "CONFIGURATION_ERROR" || String(data.error).includes("CONFIGURATION_ERROR")) {
           throw new Error("Server not configured — set SUPABASE_SERVICE_ROLE_KEY in Vercel");
         }
+        // Stale job from before durable fix — job has only 1 file on server
+        if (data.code === "VALIDATION_FAILED" || String(data.error).includes("Both files required")) {
+          clearStoredJobId();
+          throw new Error("Session expired — files not linked to server. Please clear and re-upload both files (Ctrl+Shift+R, then upload again)");
+        }
         throw new Error(data.error || "Failed to start");
       }
       router.push(`/processing/${jobId}`);
