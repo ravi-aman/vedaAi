@@ -34,9 +34,19 @@ export function fuseDocuments(
   const diagramPages: number[] = [];
   const instructionRegions: { pageNumber: number; description: string }[] = [];
 
+  // Vision-Only mode: when OCR_PROVIDER=mock, Vision is primary (no Textract grounding)
+  const isVisionPrimary = (() => {
+    try {
+      const cfg: any = require("@/lib/config").getConfig();
+      return cfg.OCR_PROVIDER === "mock";
+    } catch {
+      return false;
+    }
+  })();
+
   if (vision) {
     for (const vp of vision.pages) {
-      // Validate Vision labels against Textract geometry — do not blindly trust coarseBox
+      // Validate Vision labels against Textract geometry — do not blindly trust coarseBox (skip when Vision primary)
       for (const qc of vp.questionCandidates || []) {
         let normalized = "";
         try {
@@ -45,9 +55,11 @@ export function fuseDocuments(
           normalized = qc.rawLabel;
         }
         // Check if Textract actually has a line with similar label (grounding)
-        const hasGrounding = canonical.pages.some((cp) =>
-          cp.lines.some((l) => l.text.toLowerCase().includes(qc.rawLabel.toLowerCase().slice(0, 3)) || l.text.trim().toLowerCase().startsWith(qc.rawLabel.toLowerCase().replace(/\s+/g, "")))
-        );
+        const hasGrounding = isVisionPrimary
+          ? true
+          : canonical.pages.some((cp) =>
+              cp.lines.some((l) => l.text.toLowerCase().includes(qc.rawLabel.toLowerCase().slice(0, 3)) || l.text.trim().toLowerCase().startsWith(qc.rawLabel.toLowerCase().replace(/\s+/g, "")))
+            );
         if (!hasGrounding) {
           warnings.push(`Vision label ${qc.rawLabel} page ${vp.pageNumber} has no Textract grounding — kept as REVIEW evidence, not coordinate`);
           evidence.push({ type: "VISION_UNGROUNDED_LABEL", source: `vision-page-${vp.pageNumber}`, score: qc.confidence * 0.5, explanation: `Vision ${qc.rawLabel} not found in Textract lines` });

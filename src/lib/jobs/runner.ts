@@ -638,15 +638,17 @@ async function renderPdfBufferToPngFiles(
   await fs.mkdir(outDir, { recursive: true });
   const results: { pageNumber: number; imagePath: string; width: number; height: number }[] = [];
 
-  // Try mupdf first (most reliable)
+  // Try mupdf first (most reliable) — 2.0x for Vision-Only (mock) to sharpen handwriting
   try {
     const mupdf: any = await import("mupdf");
     const doc = mupdf.Document.openDocument(buffer, "application/pdf");
     const total = doc.countPages();
+    const cfgRender: any = (() => { try { return getConfig() as any; } catch { return null; } })();
+    const scale = cfgRender?.OCR_PROVIDER === "mock" ? 2.0 : 1.5;
     for (const pn of pageNumbers) {
       if (pn > total) break;
       const page = doc.loadPage(pn - 1);
-      const pix = page.toPixmap(mupdf.Matrix.scale(1.5, 1.5), mupdf.ColorSpace.DeviceRGB, false, true);
+      const pix = page.toPixmap(mupdf.Matrix.scale(scale, scale), mupdf.ColorSpace.DeviceRGB, false, true);
       const png: Uint8Array = pix.asPNG();
       const imagePath = path.join(outDir, `page-${String(pn).padStart(3, "0")}.png`);
       await fs.writeFile(imagePath, Buffer.from(png));
@@ -705,10 +707,12 @@ async function renderPdfBufferToPngFiles(
       }
     }
     const factory = new NodeCanvasFactory();
+    const cfgFallback: any = (() => { try { return getConfig() as any; } catch { return null; } })();
+    const scaleFallback = cfgFallback?.OCR_PROVIDER === "mock" ? 2.0 : 1.5;
     for (const pn of pageNumbers) {
       if (pn > doc.numPages) break;
       const page = await doc.getPage(pn);
-      const viewport = page.getViewport({ scale: 1.5 });
+      const viewport = page.getViewport({ scale: scaleFallback });
       const canvasAndContext = factory.create(viewport.width, viewport.height);
       await page.render({ canvasContext: canvasAndContext.context as any, viewport, canvasFactory: factory } as any).promise;
       const pngBuffer: Buffer = canvasAndContext.canvas.toBuffer("image/png");
@@ -837,6 +841,37 @@ async function ocrStageWithShared(jobId: string, shared: SharedRender, onEvent?:
     return existing;
   }
   if (ocrProviderName === "mock") {
+    // Vision-Only Strong: when Vision is configured, use VisionOcrProvider for real text+bbox (not dummy mock)
+    const canUseVisionOcr = (() => {
+      try {
+        const { getVisionProvider } = require("@/lib/vision/factory");
+        return !!getVisionProvider();
+      } catch {
+        return false;
+      }
+    })();
+    if (canUseVisionOcr) {
+      console.log(JSON.stringify({ jobId, stage: "OCR", engine: "vision-ocr", event: "vision_ocr_start_parallel", qpPages: shared.qp.length, asPages: shared.as.length }));
+      const { VisionOcrProvider } = await import("@/lib/ocr/vision-ocr-provider");
+      const visionOcr = new VisionOcrProvider();
+      await jobStore.update(jobId, { ocrStartedAt: new Date().toISOString(), ocrAttempt: (job?.ocrAttempt || 0) + 1 } as any);
+      await updateDocStageGlobal(jobId, "questionPaper", "ocr", "in_progress");
+      await updateDocStageGlobal(jobId, "answerSheet", "ocr", "in_progress");
+      const [qpRes, asRes] = await Promise.all([
+        visionOcr.processDocument({ jobId, documentId: shared.qpDoc.id, kind: "questionPaper", pages: shared.qp.map((p) => ({ pageNumber: p.pageNumber, imagePath: p.imagePath, width: p.width, height: p.height })) }),
+        visionOcr.processDocument({ jobId, documentId: shared.asDoc.id, kind: "answerSheet", pages: shared.as.map((p) => ({ pageNumber: p.pageNumber, imagePath: p.imagePath, width: p.width, height: p.height })) }),
+      ]);
+      qpRes.jobId = jobId; qpRes.documentId = shared.qpDoc.id; qpRes.kind = "questionPaper";
+      asRes.jobId = jobId; asRes.documentId = shared.asDoc.id; asRes.kind = "answerSheet";
+      const out = { qpOcr: qpRes, asOcr: asRes };
+      ocrResultStore.set(jobId, out);
+      await jobStore.update(jobId, { ocrCompletedAt: new Date().toISOString(), ocrPageCount: shared.qpPages.length + shared.asPages.length } as any);
+      await updateDocStageGlobal(jobId, "questionPaper", "ocr", "completed");
+      await updateDocStageGlobal(jobId, "answerSheet", "ocr", "completed");
+      console.log(JSON.stringify({ jobId, stage: "OCR", engine: "vision-ocr", event: "vision_ocr_completed_parallel", qpPages: qpRes.pages.length, asPages: asRes.pages.length }));
+      return out;
+    }
+    // Fallback dummy mock for tests without Vision keys
     const { MockOcrProvider } = await import("@/lib/ocr/mock");
     const provider = new MockOcrProvider();
     const qpRes = await provider.getOperationResult("mock-qp", `s3://mock/mock/${jobId}/qp/`);

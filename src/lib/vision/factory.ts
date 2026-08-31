@@ -32,17 +32,12 @@ export function getVisionProvider(): VisionProvider | null {
     return cache.get("mock")!;
   }
   if (legacyProvider === "disabled") return null;
-  // If mock in vitest env and no real keys, allow mock
+  // If no enabled providers and no keys, no vision (allow Vision-Only even when OCR_PROVIDER=mock if keys exist)
   const all = getVisionProviderConfigs() as any;
   const enabled = getOrderedEnabledProviders();
   if (enabled.length === 0) {
-    // Check if legacy auto and no key — then no vision
     const hasAnyKey = Boolean(all.openrouter?.apiKey || all.nvidia?.apiKey || all.opencode?.apiKey);
-    if (!hasAnyKey) {
-      // For tests with OCR_PROVIDER=mock, allow null
-      if (cfg.OCR_PROVIDER === "mock") return null;
-      return null;
-    }
+    if (!hasAnyKey) return null;
   }
   const preferred = getPreferredProviderConfig();
   if (!preferred) return null;

@@ -15,6 +15,13 @@ export interface RoutingDecision {
 }
 
 export function shouldInvokeVision(ocr: OcrDocumentResult, opts?: { forceVision?: boolean; kind?: "questionPaper" | "answerSheet" }): RoutingDecision {
+  // Vision-Only: when OCR is mock (no real geometry), always use Vision
+  try {
+    const cfg: any = require("@/lib/config").getConfig();
+    if (cfg.OCR_PROVIDER === "mock") {
+      return { useVision: true, reason: "vision-primary mock OCR — Vision is primary source", confidence: 0.9, estimatedDifficulty: "hard" };
+    }
+  } catch {}
   if (opts?.forceVision) {
     return { useVision: true, reason: "forceVision flag", confidence: 1, estimatedDifficulty: "hard" };
   }

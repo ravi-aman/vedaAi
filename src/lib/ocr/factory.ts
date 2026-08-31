@@ -39,8 +39,17 @@ export function getLocalOcrProvider(): LocalOcrProvider {
   const raw = String(cfg.OCR_PROVIDER || "local").trim().toLowerCase();
   const provider = raw === "aws" || raw === "textract" ? "aws" : raw === "paddleocr" ? "local" : raw;
   if (provider === "mock") {
+    // Vision-Only strong: if Vision is configured, use VisionOcrProvider for real text+bbox (not dummy)
+    try {
+      const { getVisionProvider } = require("@/lib/vision/factory");
+      if (getVisionProvider()) {
+        const { VisionOcrProvider } = require("./vision-ocr-provider");
+        cachedLocal = new VisionOcrProvider();
+        return cachedLocal!;
+      }
+    } catch {}
     const { MockOcrProvider } = require("./mock");
-    // Mock also supports processDocument via getOperationResult shape
+    // Mock also supports processDocument via getOperationResult shape (fallback for tests without Vision keys)
     const mock = new MockOcrProvider() as any;
     // Wrap mock to provide processDocument
     cachedLocal = {
