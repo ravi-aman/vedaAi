@@ -130,8 +130,18 @@ const envSchema = z.object({
   EXTRACT_TIMEOUT_MS: z.coerce.number().default(60000),
   DETECT_TIMEOUT_MS: z.coerce.number().default(60000),
   MAPPING_TIMEOUT_MS: z.coerce.number().default(30000),
-  // OCR
-  OCR_PROVIDER: z.enum(["textract", "mock", "local", "paddleocr"]).default("local"),
+  // OCR — canonical: local (PaddleOCR) | aws (Textract) | mock
+  // Aliases: paddleocr -> local, textract -> aws
+  OCR_PROVIDER: z.preprocess(
+    (v) => {
+      if (v === undefined || v === null || String(v).trim() === "") return "local";
+      const s = String(v).trim().toLowerCase();
+      if (s === "aws" || s === "textract") return "aws";
+      if (s === "paddleocr") return "local";
+      return s;
+    },
+    z.enum(["local", "mock", "aws"]).default("local"),
+  ),
   LOCAL_OCR_ENGINE: z.string().default("paddleocr"),
   LOCAL_OCR_PIPELINE: z.string().default("pp_structure_v3"),
   LOCAL_OCR_DEVICE: z.string().default("cpu"),
@@ -178,10 +188,14 @@ export function getConfig(): AppConfig {
   const parsed = envSchema.safeParse(process.env);
   if (!parsed.success) {
     console.error("Config validation failed", parsed.error.flatten());
-    // Try to surface provider order error clearly
+    // Surface provider errors clearly (fail fast for typos)
     const orderErr = parsed.error.issues.find(i => String(i.path).includes("VISION_PROVIDER_ORDER"));
     if (orderErr) {
       throw new Error(`CONFIGURATION_ERROR: ${orderErr.message}`);
+    }
+    const ocrErr = parsed.error.issues.find(i => String(i.path).includes("OCR_PROVIDER"));
+    if (ocrErr) {
+      throw new Error(`CONFIGURATION_ERROR: OCR_PROVIDER ${ocrErr.message}. Allowed: local, aws, textract, mock (aliases: paddleocr->local, textract->aws)`);
     }
     const fallback = envSchema.parse({});
     cached = {
@@ -384,13 +398,29 @@ export function isAwsOcrConfigured(): boolean {
 
 export function requireAwsOcrConfig(): void {
   const cfg = getConfig() as any;
-  if (cfg.OCR_PROVIDER === "mock" || cfg.OCR_PROVIDER === "local" || cfg.OCR_PROVIDER === "paddleocr") return;
+  // Only AWS provider needs S3/Textract config. Aliases already normalized to canonical.
+  if (cfg.OCR_PROVIDER !== "aws") return;
   const missing: string[] = [];
   if (!cfg.AWS_REGION) missing.push("AWS_REGION");
   if (!cfg.AWS_S3_BUCKET) missing.push("AWS_S3_BUCKET");
   if (missing.length > 0) {
-    throw new Error(`OCR_CONFIGURATION_ERROR: Missing ${missing.join(", ")}. Set env or use OCR_PROVIDER=mock for tests.`);
+    throw new Error(`OCR_CONFIGURATION_ERROR: OCR_PROVIDER=aws requires ${missing.join(", ")}. Set env or use OCR_PROVIDER=local or OCR_PROVIDER=mock.`);
   }
+}
+
+export function isLocalOcrProvider(): boolean {
+  const cfg = getConfig() as any;
+  return cfg.OCR_PROVIDER === "local";
+}
+
+export function isAwsOcrProvider(): boolean {
+  const cfg = getConfig() as any;
+  return cfg.OCR_PROVIDER === "aws";
+}
+
+export function getOcrProviderName(): "local" | "aws" | "mock" {
+  const cfg = getConfig() as any;
+  return cfg.OCR_PROVIDER as "local" | "aws" | "mock";
 }
 
 export function isGoogleOcrConfigured(): boolean {

@@ -1,15 +1,17 @@
-# Legacy OCR — Textract / S3 staging (ARCHIVED, NOT IN RUNTIME)
+# OCR Providers — Textract (legacy low-level) + Paddle wrapper
 
-This directory contains the historical AWS Textract implementation that was used before the PaddleOCR migration.
+This directory contains the low-level AWS Textract + S3 implementation.
 
-**Status:** NEVER imported by production code. Kept only for reference / rollback audit.
+**Status:** Used as internal engine for `OCR_PROVIDER=aws` / `textract` via `src/lib/ocr/textract-provider.ts`.
 
 Files:
 - `textract.ts` — TextractOcrProvider (TextractClient, StartDocumentAnalysis, GetDocumentAnalysis, pagination, normalizeTextractBlocks)
 - `s3.ts` — S3Client staging helpers (uploadBufferToS3, deleteS3Prefix, etc.)
 
-**Active runtime uses:** `src/lib/ocr/paddle-provider.ts` via `getLocalOcrProvider()`.
+**Active runtime:**
+- `OCR_PROVIDER=local` (or `paddleocr` alias) → `src/lib/ocr/paddle-provider.ts` (Python worker)
+- `OCR_PROVIDER=aws` (or `textract` alias) → `src/lib/ocr/textract-provider.ts` → wraps `legacy/textract.ts` + `legacy/s3.ts` (NO Paddle/Python)
+- `OCR_PROVIDER=mock` → `src/lib/ocr/mock.ts` (tests)
 
-If any production file imports from `legacy/`, CI must fail.
-
-Search for `legacy` imports should return 0 hits in `src/lib/jobs/runner.ts`, `src/lib/ocr/factory.ts`, `src/app/**`.
+`textract-provider.ts` is the only production entry point that should import from `legacy/`.
+Direct imports from `src/lib/jobs/runner.ts` go through `getLocalOcrProvider()` which lazily requires the correct provider.

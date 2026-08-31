@@ -7,29 +7,37 @@ let cachedLocal: LocalOcrProvider | null = null;
 export function getOcrProvider(): OcrProvider {
   if (cached) return cached;
   const cfg = getConfig() as any;
-  const provider = (cfg.OCR_PROVIDER || "local") as string;
+  const raw = String(cfg.OCR_PROVIDER || "local").trim().toLowerCase();
+  // Normalize aliases: aws/textract -> aws, paddleocr -> local
+  const provider = raw === "aws" || raw === "textract" ? "aws" : raw === "paddleocr" ? "local" : raw;
   if (provider === "mock") {
     // dynamic import to avoid bundling in test-only path
     const { MockOcrProvider } = require("./mock");
     cached = new MockOcrProvider();
     return cached!;
   }
-  if (provider === "local" || provider === "paddleocr") {
+  if (provider === "local") {
     // Local provider uses processDocument, not async submit/poll
     const { PaddleOcrProvider } = require("./paddle-provider");
     cached = new PaddleOcrProvider() as unknown as OcrProvider;
     return cached!;
   }
-  // Textract removed from active runtime — fail fast so regression cannot silently re-enable it
+  if (provider === "aws") {
+    // AWS Textract — S3 + async Textract, NO PaddleOCR, NO Python worker
+    const { TextractOcrProvider } = require("./textract-provider");
+    cached = new TextractOcrProvider() as unknown as OcrProvider;
+    return cached!;
+  }
   throw new Error(
-    `OCR_CONFIGURATION_ERROR: OCR_PROVIDER=${provider} is not supported. Active providers: local, paddleocr, mock. Textract was removed. Set OCR_PROVIDER=local.`
+    `OCR_CONFIGURATION_ERROR: OCR_PROVIDER=${raw} is not supported. Active providers: local, aws (alias textract), mock. Use OCR_PROVIDER=local for PaddleOCR or OCR_PROVIDER=aws for Textract.`,
   );
 }
 
 export function getLocalOcrProvider(): LocalOcrProvider {
   if (cachedLocal) return cachedLocal;
   const cfg = getConfig() as any;
-  const provider = (cfg.OCR_PROVIDER || "local") as string;
+  const raw = String(cfg.OCR_PROVIDER || "local").trim().toLowerCase();
+  const provider = raw === "aws" || raw === "textract" ? "aws" : raw === "paddleocr" ? "local" : raw;
   if (provider === "mock") {
     const { MockOcrProvider } = require("./mock");
     // Mock also supports processDocument via getOperationResult shape
@@ -57,9 +65,20 @@ export function getLocalOcrProvider(): LocalOcrProvider {
     };
     return cachedLocal!;
   }
-  const { PaddleOcrProvider } = require("./paddle-provider");
-  cachedLocal = new PaddleOcrProvider();
-  return cachedLocal!;
+  if (provider === "local") {
+    const { PaddleOcrProvider } = require("./paddle-provider");
+    cachedLocal = new PaddleOcrProvider();
+    return cachedLocal!;
+  }
+  if (provider === "aws") {
+    // AWS Textract path — NO PaddleOCR, NO Python worker
+    const { TextractOcrProvider } = require("./textract-provider");
+    cachedLocal = new TextractOcrProvider();
+    return cachedLocal!;
+  }
+  throw new Error(
+    `OCR_CONFIGURATION_ERROR: OCR_PROVIDER=${raw} is not supported. Active providers: local, aws (alias textract), mock.`,
+  );
 }
 
 export function setOcrProviderForTest(p: OcrProvider | null) {

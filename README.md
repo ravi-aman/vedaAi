@@ -173,20 +173,31 @@ All Vision/OCR/Mapping config is **`.env`-driven, no code change**. See `.env.ex
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | yes | Publishable key (`sb_publishable_...`) |
 | `SUPABASE_SERVICE_ROLE_KEY` | server-only | Service role (never `NEXT_PUBLIC`) |
 
-### OCR — PaddleOCR (local only)
+### OCR — Provider Switch (PaddleOCR vs AWS Textract)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OCR_PROVIDER` | `local` | `local` (Paddle) or `mock` (tests) |
-| `LOCAL_OCR_ENGINE` | `paddleocr` | Engine |
-| `LOCAL_OCR_PIPELINE` | `pp_structure_v3` | Pipeline |
-| `LOCAL_OCR_DEVICE` | `cpu` | `cpu` |
-| `LOCAL_OCR_CONCURRENCY` | `2` | Pages per worker |
-| `LOCAL_OCR_LANGUAGE` | `en` | `en` |
-| `LOCAL_OCR_VERSION` | `PP-OCRv5` | `PP-OCRv5` |
-| `LOCAL_OCR_PYTHON` | `python` | Python binary |
-| `LOCAL_OCR_TIMEOUT_MS` | `600000` | Worker timeout |
-| `OCR_OPERATION_TIMEOUT_MS` | `300000` | Job timeout |
+| `OCR_PROVIDER` | `local` | `local` → PaddleOCR (PP-OCRv5, Python worker) · `aws` → AWS Textract (S3 async, **NO** Paddle/Python) · `textract` → alias for `aws` · `mock` → tests |
+| `LOCAL_OCR_ENGINE` | `paddleocr` | Engine (only when `local`) |
+| `LOCAL_OCR_PIPELINE` | `pp_structure_v3` | Pipeline (only `local`) |
+| `LOCAL_OCR_DEVICE` | `cpu` | `cpu` (only `local`) |
+| `LOCAL_OCR_CONCURRENCY` | `2` | Pages per worker (only `local`) |
+| `LOCAL_OCR_LANGUAGE` | `en` | `en` (only `local`) |
+| `LOCAL_OCR_VERSION` | `PP-OCRv5` | `PP-OCRv5` (only `local`) |
+| `LOCAL_OCR_PYTHON` | `python` | Python binary (only `local`) |
+| `LOCAL_OCR_TIMEOUT_MS` | `600000` | Worker timeout (only `local`) |
+| `OCR_OPERATION_TIMEOUT_MS` | `300000` | Job timeout (both) |
+| `AWS_REGION` | `ap-south-1` | Required when `OCR_PROVIDER=aws`/`textract` |
+| `AWS_S3_BUCKET` | — | Required when `aws` (Textract staging) |
+| `AWS_S3_INPUT_PREFIX` | `ocr-input` | S3 prefix for uploads (aws only) |
+| `AWS_S3_OUTPUT_PREFIX` | `ocr-output` | S3 prefix for Textract output (aws only) |
+
+**Switching:**
+```
+OCR_PROVIDER=local      → PaddleOCR  → local Python worker
+OCR_PROVIDER=aws        → AWS Textract → NO PaddleOCR / NO Python OCR worker
+OCR_PROVIDER=textract   → same AWS Textract path (alias)
+```
 
 ### Vision Provider Selection
 

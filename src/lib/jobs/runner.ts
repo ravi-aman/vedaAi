@@ -812,12 +812,24 @@ async function renderSharedStage(jobId: string): Promise<SharedRender> {
   return { qp: qpImgs, as: asImgs, qpDoc, asDoc, qpPages, asPages };
 }
 
-// ── NEW: OCR with shared render, QP||AS parallel (bounded) ───────────────
+// ── OCR with shared render, QP||AS parallel — provider-aware ───────────────
+// OCR_PROVIDER=local      -> PaddleOCR (PP-StructureV3) -> local Python worker (spawn)
+// OCR_PROVIDER=aws/textract -> AWS Textract (S3 + async) -> NO PaddleOCR, NO Python worker
+// OCR_PROVIDER=mock        -> Mock (tests)
 async function ocrStageWithShared(jobId: string, shared: SharedRender, onEvent?: (e: TimelineEvent) => void): Promise<{ qpOcr?: OcrDocumentResult; asOcr?: OcrDocumentResult }> {
   const cfg = getConfig() as any;
-  const ocrProviderName = cfg.OCR_PROVIDER || "local";
-  if (ocrProviderName === "textract") throw new AppError(ErrorCodes.OCR_CONFIGURATION_ERROR, "Textract disabled");
-  console.log(JSON.stringify({ jobId, stage: "OCR", provider: "paddleocr", pipeline: "pp_structure_v3", engine: "paddleocr", event: "paddleocr_start_parallel", requestedProvider: ocrProviderName }));
+  const rawProvider = String(cfg.OCR_PROVIDER || "local").trim().toLowerCase();
+  const ocrProviderName = rawProvider === "aws" || rawProvider === "textract" ? "aws" : rawProvider === "paddleocr" ? "local" : rawProvider;
+  const isAws = ocrProviderName === "aws";
+  const isMock = ocrProviderName === "mock";
+  const isLocal = ocrProviderName === "local";
+  if (isAws) {
+    console.log(JSON.stringify({ jobId, stage: "OCR", provider: "textract", engine: "aws-textract", pipeline: "textract-async", event: "textract_start_parallel", requestedProvider: rawProvider, canonicalProvider: ocrProviderName }));
+  } else if (isLocal) {
+    console.log(JSON.stringify({ jobId, stage: "OCR", provider: "paddleocr", pipeline: "pp_structure_v3", engine: "paddleocr", event: "paddleocr_start_parallel", requestedProvider: rawProvider, canonicalProvider: ocrProviderName }));
+  } else {
+    console.log(JSON.stringify({ jobId, stage: "OCR", provider: ocrProviderName, engine: ocrProviderName, event: "ocr_start_parallel", requestedProvider: rawProvider, canonicalProvider: ocrProviderName }));
+  }
   const existing = ocrResultStore.get(jobId);
   const job = await jobStore.get(jobId);
   if (existing && job?.ocrCompletedAt) {
@@ -838,12 +850,86 @@ async function ocrStageWithShared(jobId: string, shared: SharedRender, onEvent?:
     await jobStore.update(jobId, { ocrStartedAt: new Date().toISOString(), ocrCompletedAt: new Date().toISOString(), ocrPageCount: shared.qpPages.length + shared.asPages.length, ocrAttempt: (job?.ocrAttempt || 0) + 1 } as any);
     return out;
   }
-  if (ocrProviderName !== "local" && ocrProviderName !== "paddleocr") throw new AppError(ErrorCodes.OCR_CONFIGURATION_ERROR, `OCR_PROVIDER=${ocrProviderName} not supported`);
+  // ── Provider dispatch: AWS Textract vs Local PaddleOCR ───────────────
+  if (isAws) {
+    // ===== AWS Textract path — NO PaddleOCR, NO Python worker, NO ensurePaddleModelsProvisioned =====
+    // Validates S3/Textract config, uploads PDFs to S3, starts async Textract, polls, fetches results
+    const { requireAwsOcrConfig } = await import("@/lib/config");
+    try {
+      requireAwsOcrConfig();
+    } catch (e: any) {
+      throw new AppError(ErrorCodes.OCR_CONFIGURATION_ERROR, e.message);
+    }
+    console.log(JSON.stringify({ jobId, stage: "OCR", engine: "aws-textract", event: "aws_start_parallel", qpPages: shared.qp.length, asPages: shared.as.length }));
+    const textractProvider = getLocalOcrProvider(); // TextractOcrProvider
+    await jobStore.update(jobId, { ocrStartedAt: new Date().toISOString(), ocrAttempt: (job?.ocrAttempt || 0) + 1 } as any);
+    await updateDocStageGlobal(jobId, "questionPaper", "ocr", "in_progress");
+    await updateDocStageGlobal(jobId, "answerSheet", "ocr", "in_progress");
+
+    async function runTextractDoc(kind: "questionPaper" | "answerSheet"): Promise<OcrDocumentResult> {
+      const t0 = Date.now();
+      const isQP = kind === "questionPaper";
+      const doc = isQP ? shared.qpDoc : shared.asDoc;
+      const pages = isQP ? shared.qp : shared.as;
+      onEvent?.({ stage: `OCR_${kind}`, document: kind, start: t0, status: "in_progress", pageRange: `${pages[0]?.pageNumber}-${pages[pages.length-1]?.pageNumber}` });
+      console.log(JSON.stringify({ jobId, stage: "OCR", engine: "aws-textract", event: "textract_process_start", kind, pages: pages.length }));
+      if (isCancelled(jobId)) throw new AppError(ErrorCodes.UNKNOWN_ERROR, `OCR ${kind} cancelled`);
+      const maxRetries = 2;
+      let lastErr: any;
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          if (attempt > 0) {
+            const delay = Math.pow(2, attempt) * 800 + Math.random() * 300;
+            console.log(JSON.stringify({ jobId, stage: "OCR", engine: "aws-textract", event: "retry_wait", kind, attempt, delay: Math.round(delay) }));
+            await new Promise((r) => setTimeout(r, delay));
+            if (isCancelled(jobId)) throw new AppError(ErrorCodes.UNKNOWN_ERROR, `OCR ${kind} cancelled during retry`);
+          }
+          // Textract provider reads PDF from fileStorage directly; pages param is just for count/meta
+          const result = await (textractProvider as any).processDocument({
+            jobId,
+            documentId: doc.id,
+            kind,
+            pages: pages.map((p) => ({ pageNumber: p.pageNumber, imagePath: p.imagePath, width: p.width, height: p.height })),
+          });
+          const dur = Date.now() - t0;
+          onEvent?.({ stage: `OCR_${kind}`, document: kind, start: t0, end: Date.now(), durationMs: dur, status: "completed", pageRange: `${pages[0]?.pageNumber}-${pages[pages.length-1]?.pageNumber}` });
+          console.log(JSON.stringify({ jobId, stage: "OCR", engine: "aws-textract", event: "textract_process_ok_parallel", kind, pages: result.pages.length, durationMs: dur, avgPerPage: Math.round(dur / result.pages.length), attempt }));
+          await updateDocStageGlobal(jobId, kind, "ocr", "completed");
+          return result;
+        } catch (e: any) {
+          lastErr = e;
+          const isRetriable = e?.code === OcrErrorCodes.OPERATION_TIMEOUT || e?.code === OcrErrorCodes.SUBMISSION_FAILED || e?.code === OcrErrorCodes.OPERATION_FAILED || String(e.message).includes("timed out") || String(e.message).includes("Throttling") || String(e.message).includes("throttled") || e?.retryable === true;
+          const isConfigErr = e?.code === OcrErrorCodes.CONFIGURATION_ERROR || e?.code === OcrErrorCodes.AUTH_ERROR || e?.code === ErrorCodes.OCR_CONFIGURATION_ERROR;
+          if (isConfigErr || !isRetriable || attempt === maxRetries) {
+            onEvent?.({ stage: `OCR_${kind}`, document: kind, start: t0, end: Date.now(), durationMs: Date.now() - t0, status: "failed", attempt });
+            await updateDocStageGlobal(jobId, kind, "ocr", "failed");
+            throw e;
+          }
+          console.warn(JSON.stringify({ jobId, stage: "OCR", engine: "aws-textract", event: "retry", kind, attempt, error: e.message?.slice(0, 200), code: e.code }));
+        }
+      }
+      throw lastErr;
+    }
+
+    console.log(JSON.stringify({ jobId, stage: "OCR", engine: "aws-textract", event: "parallel_start", qpPages: shared.qp.length, asPages: shared.as.length, concurrency: 2 }));
+    const [qpOcr, asOcr] = await Promise.all([runTextractDoc("questionPaper"), runTextractDoc("answerSheet")]);
+    const out = { qpOcr, asOcr };
+    ocrResultStore.set(jobId, out);
+    await withJobLock(jobId, async () => {
+      await jobStore.update(jobId, { ocrCompletedAt: new Date().toISOString(), ocrPageCount: shared.qpPages.length + shared.asPages.length } as any);
+    });
+    console.log(JSON.stringify({ jobId, stage: "OCR", engine: "aws-textract", event: "aws_completed_parallel", qpPages: qpOcr.pages.length, asPages: asOcr.pages.length, parallel: true }));
+    return out;
+  }
+
+  if (!isLocal) throw new AppError(ErrorCodes.OCR_CONFIGURATION_ERROR, `OCR_PROVIDER=${rawProvider} not supported. Use local, aws, or mock.`);
+
+  // ===== Local PaddleOCR path — Python worker, PP-StructureV3 =====
   console.log(JSON.stringify({ jobId, stage: "OCR", engine: "paddleocr", event: "local_start_parallel", qpPages: shared.qp.length, asPages: shared.as.length }));
   const localProvider = getLocalOcrProvider();
   await jobStore.update(jobId, { ocrStartedAt: new Date().toISOString(), ocrAttempt: (job?.ocrAttempt || 0) + 1 } as any);
 
-  // Ensure models provisioned once before parallel workers (file-locked)
+  // Ensure models provisioned once before parallel workers (file-locked) — local only, NOT for aws
   await ensurePaddleModelsProvisioned();
   await updateDocStageGlobal(jobId, "questionPaper", "ocr", "in_progress");
   await updateDocStageGlobal(jobId, "answerSheet", "ocr", "in_progress");
@@ -1381,7 +1467,8 @@ async function extracting(jobId: string, prep: any, ocrData?: { qpOcr?: OcrDocum
   let v2DocumentStructure: any = null;
   let v2PageArtifacts: any[] = [];
   const cfgDet = getConfig() as any;
-  const useV2 = cfgDet.OCR_PROVIDER === "local" || cfgDet.OCR_PROVIDER === "paddleocr";
+  // Use V2 extractor for both local (Paddle) and aws (Textract) — only mock uses legacy deterministic fallback
+  const useV2 = cfgDet.OCR_PROVIDER !== "mock";
   try {
     if (useV2) {
       // Try V2 forensic rebuild first (Constraints 3,4,8,15)
